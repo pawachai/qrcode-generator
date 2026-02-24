@@ -298,7 +298,7 @@ def main():
         st.divider()
         st.header("🔲 ค่าเริ่มต้น QR Code")
         default_qr_size = st.number_input("ขนาดเริ่มต้น QR (mm)", min_value=3, max_value=500, value=30, step=1)
-        default_show_label = st.checkbox("แสดงข้อความใต้ QR", value=True)
+        default_show_label = st.checkbox("แสดงข้อความใต้ QR", value=False)
         default_label_size = st.number_input("ขนาดตัวอักษร (pt)", min_value=2, max_value=72, value=7, step=1)
 
     # ─── STEP 1 : IMPORT EXCEL ───
