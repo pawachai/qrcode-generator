@@ -273,19 +273,19 @@ def main():
     with st.sidebar:
         st.header("📄 ตั้งค่าหน้ากระดาษ")
 
-        use_custom = st.checkbox("ใช้ขนาดกระดาษ Custom")
+        page_options = list(PAGE_SIZES.keys()) + ["📐 กำหนดเอง (Custom)"]
+        page_size_name = st.selectbox("ขนาดกระดาษ", page_options, index=1)
 
-        if use_custom:
+        if page_size_name == "📐 กำหนดเอง (Custom)":
             ccol1, ccol2 = st.columns(2)
             with ccol1:
-                custom_w = st.number_input("กว้าง (mm)", value=210, min_value=50, max_value=2000)
+                custom_w = st.number_input("กว้าง (mm)", value=210.0, min_value=10.0, max_value=5000.0, step=1.0, format="%.1f")
             with ccol2:
-                custom_h = st.number_input("สูง (mm)", value=297, min_value=50, max_value=2000)
+                custom_h = st.number_input("สูง (mm)", value=297.0, min_value=10.0, max_value=5000.0, step=1.0, format="%.1f")
             page_size = (custom_w * mm, custom_h * mm)
             page_w_mm = float(custom_w)
             page_h_mm = float(custom_h)
         else:
-            page_size_name = st.selectbox("ขนาดกระดาษ", list(PAGE_SIZES.keys()), index=1)
             page_size = PAGE_SIZES[page_size_name]
             page_w_mm = round(page_size[0] / mm, 1)
             page_h_mm = round(page_size[1] / mm, 1)
@@ -297,9 +297,9 @@ def main():
 
         st.divider()
         st.header("🔲 ค่าเริ่มต้น QR Code")
-        default_qr_size = st.slider("ขนาดเริ่มต้น QR (mm)", 5, 150, 30)
+        default_qr_size = st.number_input("ขนาดเริ่มต้น QR (mm)", min_value=3, max_value=500, value=30, step=1)
         default_show_label = st.checkbox("แสดงข้อความใต้ QR", value=True)
-        default_label_size = st.slider("ขนาดตัวอักษร (pt)", 4, 14, 7)
+        default_label_size = st.number_input("ขนาดตัวอักษร (pt)", min_value=2, max_value=72, value=7, step=1)
 
     # ─── STEP 1 : IMPORT EXCEL ───
     st.markdown('<div class="step-header">📥 Step 1 — นำเข้าไฟล์ Excel</div>', unsafe_allow_html=True)
@@ -515,7 +515,7 @@ def main():
 
         c3, c4 = st.columns(2)
         with c3:
-            st.number_input("ขนาด QR (mm)", min_value=5, max_value=150,
+            st.number_input("ขนาด QR (mm)", min_value=3, max_value=500,
                             step=1, key="_edit_size", on_change=save_back)
         with c4:
             st.checkbox("แสดงข้อความใต้ QR", key="_edit_label", on_change=save_back)
