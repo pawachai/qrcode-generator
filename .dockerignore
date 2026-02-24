@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+.git/
+sample_data.xlsx
+create_sample.py
+README.md
