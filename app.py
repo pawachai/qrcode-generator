@@ -945,18 +945,15 @@ def main():
             st.checkbox("แสดงข้อความใต้ QR", key="_edit_label", on_change=save_back)
 
         if st.session_state.get("_edit_label", False):
-            # Pre-populate session state keys with correct defaults BEFORE
-            # widgets render.  This prevents Streamlit from falling back to
-            # min_value (e.g. -200, 2, 5) when the checkbox is first toggled on.
+            # ดึงค่าล่าสุดจาก dict ที่เราเซฟไว้มาเป็นหลัก
             p_now = st.session_state.qr_positions.get(active_cn, {})
-            if "_edit_label_x_offset" not in st.session_state:
-                st.session_state._edit_label_x_offset = int(p_now.get("label_x_offset", 0))
-            if "_edit_label_font_size" not in st.session_state:
-                st.session_state._edit_label_font_size = int(p_now.get("label_font_size", default_label_size))
-            if "_edit_label_width" not in st.session_state:
-                st.session_state._edit_label_width = int(p_now.get("label_width_mm", default_qr_size))
-            if "_edit_label_align" not in st.session_state:
-                st.session_state._edit_label_align = p_now.get("label_align", "กลาง")
+            
+            # 🔴 ทริคแก้บั๊ก: บังคับยัดค่าลง session_state ทับลงไปเลยทุกครั้งก่อนวาด Widget
+            # เพื่อไม่ให้ Streamlit แอบไปดึงค่า min_value (-200) มาใส่เอง
+            st.session_state["_edit_label_x_offset"] = int(p_now.get("label_x_offset", 0))
+            st.session_state["_edit_label_font_size"] = int(p_now.get("label_font_size", default_label_size))
+            st.session_state["_edit_label_width"] = int(p_now.get("label_width_mm", default_qr_size))
+            st.session_state["_edit_label_align"] = p_now.get("label_align", "กลาง")
 
             c5, c6 = st.columns(2)
             with c5:
