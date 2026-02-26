@@ -5,10 +5,16 @@ from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
+import matplotlib.colors as mc
 from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4, A3, A5, A6, B4, B5, letter, legal, landscape
 from reportlab.lib.units import mm
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.pdfbase.pdfmetrics import stringWidth
+from matplotlib.font_manager import FontProperties
+import textwrap
 import tempfile
 import os
 import math
@@ -33,6 +39,95 @@ COLORS = [
     "#9b59b6", "#1abc9c", "#e67e22", "#34495e",
     "#d35400", "#16a085", "#c0392b", "#2980b9",
 ]
+
+
+def find_thai_font() -> str | None:
+    """Find a Thai-capable TTF/OTF font file on the current system."""
+    candidates = [
+        # macOS
+        "/System/Library/Fonts/Supplemental/Ayuthaya.ttf",
+        "/System/Library/Fonts/Supplemental/Sathu.ttf",
+        # Linux / Docker (fonts-thai-tlwg)
+        "/usr/share/fonts/truetype/thai-tlwg/TlwgTypo.ttf",
+        "/usr/share/fonts/truetype/thai-tlwg/Loma.ttf",
+        "/usr/share/fonts/truetype/thai-tlwg/Garuda.ttf",
+        "/usr/share/fonts/truetype/thai-tlwg/Sarabun.ttf",
+        # Linux / Docker (fonts-noto)
+        "/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf",
+        "/usr/share/fonts/opentype/noto/NotoSansThai-Regular.otf",
+        # Windows fallback
+        "C:/Windows/Fonts/tahoma.ttf",
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return None
+
+
+# ── Register Thai font with ReportLab once at module level ──
+_THAI_FONT_PATH = find_thai_font()
+_THAI_FONT_NAME = "Helvetica"  # fallback to built-in
+if _THAI_FONT_PATH:
+    try:
+        pdfmetrics.registerFont(TTFont("ThaiFont", _THAI_FONT_PATH))
+        _THAI_FONT_NAME = "ThaiFont"
+    except Exception:
+        pass
+
+# FontProperties for matplotlib (None = use default)
+_THAI_FONT_PROPS: FontProperties | None = (
+    FontProperties(fname=_THAI_FONT_PATH) if _THAI_FONT_PATH else None
+)
+
+
+def wrap_text_for_preview(text: str, font_size_pt: float, width_mm: float) -> list:
+    """Wrap text to fit within width_mm for matplotlib preview."""
+    # Estimate: avg char width ≈ 0.55 × font_size_pt × 0.353 mm
+    char_w_mm = max(0.5, font_size_pt * 0.353 * 0.55)
+    chars_per_line = max(3, int(width_mm / char_w_mm))
+    if " " in text:
+        return textwrap.wrap(text, width=chars_per_line) or [text]
+    else:
+        # No spaces (Thai dense text) — character-level split
+        return [text[i:i + chars_per_line] for i in range(0, len(text), chars_per_line)] or [text]
+
+
+def wrap_text_for_pdf(text: str, font_name: str, font_size: float, max_width_pt: float) -> list:
+    """Wrap text to fit within max_width_pt using ReportLab string measurement."""
+    def measure(s):
+        try:
+            return stringWidth(s, font_name, font_size)
+        except Exception:
+            return len(s) * font_size * 0.5
+
+    if " " in text:
+        words = text.split()
+        lines, current = [], ""
+        for word in words:
+            candidate = (current + " " + word).strip()
+            if measure(candidate) <= max_width_pt:
+                current = candidate
+            else:
+                if current:
+                    lines.append(current)
+                current = word
+        if current:
+            lines.append(current)
+        return lines or [text]
+    else:
+        # Character-level wrap for Thai/no-space text
+        lines, current = [], ""
+        for char in text:
+            candidate = current + char
+            if measure(candidate) <= max_width_pt:
+                current = candidate
+            else:
+                if current:
+                    lines.append(current)
+                current = char
+        if current:
+            lines.append(current)
+        return lines or [text]
 
 
 def smart_str(val) -> str:
@@ -144,9 +239,43 @@ def create_page_preview(
             label_y_pos = y + size + 2
             if badge_y > y:
                 label_y_pos = badge_y + badge_h + 1
-            display = value if len(value) <= 28 else value[:25] + "..."
-            ax.text(x + size / 2, label_y_pos, display,
-                    ha="center", va="top", fontsize=5, color="#555", zorder=7)
+            label_font_size = cfg.get("label_font_size", 7)
+            label_x_offset = cfg.get("label_x_offset", 0)
+            label_width_mm = max(5.0, float(cfg.get("label_width_mm", size)))
+            label_x_center = x + size / 2 + label_x_offset
+            label_x_left = label_x_center - label_width_mm / 2
+
+            # Wrap text
+            lines = wrap_text_for_preview(value, label_font_size, label_width_mm)
+            line_height_mm = label_font_size * 0.353 * 2.5
+            total_h = len(lines) * line_height_mm + line_height_mm * 0.5
+
+            # Draw dashed bounding box
+            rgb = mc.to_rgb(color)
+            ax.add_patch(patches.Rectangle(
+                (label_x_left, label_y_pos - 0.5), label_width_mm, total_h,
+                linewidth=0.6, edgecolor=color, facecolor=(*rgb, 0.06),
+                linestyle="--", zorder=6,
+            ))
+
+            # Determine alignment
+            align_label = cfg.get("label_align", "กลาง")
+            if align_label == "ซ้าย":
+                ha_mpl, text_x = "left", label_x_left + 0.5
+            elif align_label == "ขวา":
+                ha_mpl, text_x = "right", label_x_left + label_width_mm - 0.5
+            else:
+                ha_mpl, text_x = "center", label_x_center
+
+            for li, line in enumerate(lines):
+                line_y = label_y_pos + li * line_height_mm
+                if _THAI_FONT_PROPS is not None:
+                    fp = FontProperties(fname=_THAI_FONT_PATH, size=label_font_size)
+                    ax.text(text_x, line_y, line,
+                            ha=ha_mpl, va="top", fontproperties=fp, color="#555", zorder=7)
+                else:
+                    ax.text(text_x, line_y, line,
+                            ha=ha_mpl, va="top", fontsize=label_font_size, color="#555", zorder=7)
 
     pad = 8
     ax.set_xlim(-pad, page_w_mm + pad + stack_count * 2)
@@ -198,11 +327,25 @@ def generate_pdf(
             os.unlink(tmp.name)
 
             if cfg.get("show_label", True):
-                label_x = x_pt + (cfg["size_mm"] * mm) / 2
-                label_y = y_pt - cfg.get("label_font_size", 7) - 2
-                c.setFont("Helvetica", cfg.get("label_font_size", 7))
-                display = value if len(value) <= 40 else value[:37] + "..."
-                c.drawCentredString(label_x, label_y, display)
+                font_size = cfg.get("label_font_size", 7)
+                x_offset_pt = cfg.get("label_x_offset", 0) * mm
+                label_width_pt = max(5 * mm, cfg.get("label_width_mm", cfg["size_mm"]) * mm)
+                label_x_center = x_pt + (cfg["size_mm"] * mm) / 2 + x_offset_pt
+                label_x_left = label_x_center - label_width_pt / 2
+                c.setFont(_THAI_FONT_NAME, font_size)
+                lines = wrap_text_for_pdf(value, _THAI_FONT_NAME, font_size, label_width_pt)
+                line_spacing = font_size * 1.4
+                label_y = y_pt - font_size - 2
+
+                align_label = cfg.get("label_align", "กลาง")
+                for line in lines:
+                    if align_label == "ซ้าย":
+                        c.drawString(label_x_left, label_y, line)
+                    elif align_label == "ขวา":
+                        c.drawRightString(label_x_left + label_width_pt, label_y, line)
+                    else:
+                        c.drawCentredString(label_x_center, label_y, line)
+                    label_y -= line_spacing
 
         if progress_callback:
             progress_callback((row_idx + 1) / total_rows)
@@ -436,6 +579,10 @@ def main():
                 "y": max(0, min(10 + i * (default_qr_size + 20), max_y - default_qr_size)),
                 "size": default_qr_size,
                 "label": default_show_label,
+                "label_x_offset": 0,
+                "label_font_size": default_label_size,
+                "label_width_mm": default_qr_size,
+                "label_align": "กลาง",
             }
 
     # ── Callbacks ──
@@ -447,6 +594,11 @@ def main():
         st.session_state._edit_y = pos["y"]
         st.session_state._edit_size = pos["size"]
         st.session_state._edit_label = pos["label"]
+        st.session_state._edit_label_x_offset = pos.get("label_x_offset", 0)
+        st.session_state._edit_label_font_size = pos.get("label_font_size", default_label_size)
+        st.session_state._edit_label_width = pos.get("label_width_mm", default_qr_size)
+        st.session_state._edit_label_align = pos.get("label_align", "กลาง")
+        st.session_state._last_active_cn = cn
 
     def save_back():
         """Save current edit widget values back to the active column's position."""
@@ -456,6 +608,10 @@ def main():
             "y": st.session_state._edit_y,
             "size": st.session_state._edit_size,
             "label": st.session_state._edit_label,
+            "label_x_offset": st.session_state.get("_edit_label_x_offset", 0),
+            "label_font_size": st.session_state.get("_edit_label_font_size", default_label_size),
+            "label_width_mm": st.session_state.get("_edit_label_width", default_qr_size),
+            "label_align": st.session_state.get("_edit_label_align", "กลาง"),
         }
 
     # ── Init edit widget defaults (first column) ──
@@ -469,11 +625,20 @@ def main():
     active_cn = str(st.session_state._active_qr)
     pos = st.session_state.qr_positions.get(active_cn, {"x": 10, "y": 10, "size": default_qr_size, "label": True})
 
-    if "_edit_x" not in st.session_state:
+    # Always ensure ALL edit keys exist with correct defaults
+    # (runs on first load and whenever active column changes)
+    need_init = "_edit_x" not in st.session_state
+    col_changed = st.session_state.get("_last_active_cn") != active_cn
+    if need_init or col_changed:
         st.session_state._edit_x = pos["x"]
         st.session_state._edit_y = pos["y"]
         st.session_state._edit_size = pos["size"]
         st.session_state._edit_label = pos["label"]
+        st.session_state._edit_label_x_offset = pos.get("label_x_offset", 0)
+        st.session_state._edit_label_font_size = pos.get("label_font_size", default_label_size)
+        st.session_state._edit_label_width = pos.get("label_width_mm", default_qr_size)
+        st.session_state._edit_label_align = pos.get("label_align", "กลาง")
+        st.session_state._last_active_cn = active_cn
 
     ctrl_col, preview_col = st.columns([1, 2])
 
@@ -520,6 +685,45 @@ def main():
         with c4:
             st.checkbox("แสดงข้อความใต้ QR", key="_edit_label", on_change=save_back)
 
+        if st.session_state.get("_edit_label", False):
+            # Get saved values from qr_positions (source of truth)
+            p_now = st.session_state.qr_positions.get(active_cn, {})
+            _def_x_off = p_now.get("label_x_offset", 0)
+            _def_fsize = p_now.get("label_font_size", default_label_size)
+            _def_width = p_now.get("label_width_mm", default_qr_size)
+            _def_align = p_now.get("label_align", "กลาง")
+
+            # Use value= only when key is missing (first render after toggle).
+            # Streamlit errors if both key (in session_state) and value= are present
+            # with different values, so we conditionally build kwargs.
+            def _ni(label, mn, mx, stp, key, default, **extra):
+                kw = {"label": label, "min_value": mn, "max_value": mx,
+                      "step": stp, "key": key, "on_change": save_back, **extra}
+                if key not in st.session_state:
+                    kw["value"] = default
+                return st.number_input(**kw)
+
+            c5, c6 = st.columns(2)
+            with c5:
+                _ni("↔ ตำแหน่งซ้าย-ขวาตัวอักษร (mm)", -200, 200, 1,
+                    "_edit_label_x_offset", _def_x_off,
+                    help="0 = กึ่งกลาง QR, ค่าบวก = ขวา, ค่าลบ = ซ้าย")
+            with c6:
+                _ni("🔤 ขนาดตัวอักษร (pt)", 2, 72, 1,
+                    "_edit_label_font_size", _def_fsize)
+            c7, c8 = st.columns(2)
+            with c7:
+                _ni("📏 ความกว้างกรอบตัวอักษร (mm)", 5, max_x, 1,
+                    "_edit_label_width", _def_width,
+                    help="ข้อความจะขึ้นบรรทัดใหม่เมื่อเกินความกว้างนี้")
+            with c8:
+                align_options = ["ซ้าย", "กลาง", "ขวา"]
+                r_kw = {"label": "📐 จัดตำแหน่งตัวอักษร", "options": align_options,
+                        "key": "_edit_label_align", "on_change": save_back, "horizontal": True}
+                if "_edit_label_align" not in st.session_state:
+                    r_kw["index"] = align_options.index(_def_align) if _def_align in align_options else 1
+                st.radio(**r_kw)
+
         # Also save on every render (in case user just typed)
         save_back()
 
@@ -552,7 +756,10 @@ def main():
             "y_mm": p["y"],
             "size_mm": p["size"],
             "show_label": p["label"],
-            "label_font_size": default_label_size,
+            "label_font_size": p.get("label_font_size", default_label_size),
+            "label_x_offset": p.get("label_x_offset", 0),
+            "label_width_mm": p.get("label_width_mm", p["size"]),
+            "label_align": p.get("label_align", "กลาง"),
         }
 
         qr_preview_configs.append({
@@ -563,6 +770,10 @@ def main():
             "value": sv,
             "color": color,
             "show_label": p["label"],
+            "label_font_size": p.get("label_font_size", default_label_size),
+            "label_x_offset": p.get("label_x_offset", 0),
+            "label_width_mm": p.get("label_width_mm", p["size"]),
+            "label_align": p.get("label_align", "กลาง"),
             "is_active": (cn_str == active_cn),
         })
 
