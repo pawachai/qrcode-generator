@@ -46,6 +46,11 @@ import glob
 
 def find_thai_font() -> str | None:
     """Find a Thai-capable TTF/OTF font file on the current system."""
+    # 0. Bundled font (always ship with the app)
+    bundled = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts", "Sarabun-Regular.ttf")
+    if os.path.exists(bundled):
+        return bundled
+
     # 1. Check known exact paths first (fast)
     candidates = [
         # macOS
@@ -111,33 +116,89 @@ _THAI_FONT_PROPS: FontProperties | None = (
 )
 
 
-def render_thai_text_line(text: str, font_path: str, font_size_pt: float,
-                         color_hex: str = "#555555") -> tuple:
-    """Render one line of text with PIL (handles Thai shaping) → (np_array, w_mm, h_mm)."""
-    render_scale = 10
-    pixel_size = max(16, int(font_size_pt * render_scale))
+def render_thai_text_image(text: str, font_path: str, font_size_pt: float,
+                          width_mm: float, align: str = "center",
+                          color_hex: str = "#555555") -> tuple:
+    """Render wrapped text block with PIL → (np_array, w_mm, h_mm).
+    Returns (None, 0, 0) on failure.
+    """
+    render_scale = 8  # px per pt for sharp rendering
+    pixel_size = max(12, int(font_size_pt * render_scale))
+    mm_per_px = (font_size_pt * 0.353) / pixel_size
+    target_w_px = max(20, int(width_mm / mm_per_px))
+
     try:
         font = ImageFont.truetype(font_path, pixel_size)
     except Exception:
         return None, 0, 0
 
-    dummy = Image.new("RGBA", (1, 1))
-    draw = ImageDraw.Draw(dummy)
-    bbox = draw.textbbox((0, 0), text, font=font)
-    w = bbox[2] - bbox[0] + 8
-    h = bbox[3] - bbox[1] + 8
-    if w <= 0 or h <= 0:
-        return None, 0, 0
+    # --- Word wrap using actual pixel measurement ---
+    def measure_px(s):
+        bb = font.getbbox(s)
+        return bb[2] - bb[0] if bb else 0
 
-    img = Image.new("RGBA", (w, h), (255, 255, 255, 0))
+    # Split into words (spaces) then wrap; for no-space text, wrap by char
+    if " " in text:
+        tokens = text.split(" ")
+        lines, cur = [], ""
+        for tok in tokens:
+            trial = (cur + " " + tok).strip()
+            if measure_px(trial) <= target_w_px:
+                cur = trial
+            else:
+                if cur:
+                    lines.append(cur)
+                cur = tok
+        if cur:
+            lines.append(cur)
+    else:
+        lines, cur = [], ""
+        for ch in text:
+            trial = cur + ch
+            if measure_px(trial) <= target_w_px:
+                cur = trial
+            else:
+                if cur:
+                    lines.append(cur)
+                cur = ch
+        if cur:
+            lines.append(cur)
+    if not lines:
+        lines = [text]
+
+    # --- Render all lines onto one image ---
+    line_spacing = int(pixel_size * 1.5)
+    canvas_w = target_w_px + 16
+    canvas_h = line_spacing * len(lines) + pixel_size
+    img = Image.new("RGBA", (canvas_w, canvas_h), (255, 255, 255, 0))
     draw = ImageDraw.Draw(img)
+
     r = int(color_hex[1:3], 16)
     g = int(color_hex[3:5], 16)
     b = int(color_hex[5:7], 16)
-    draw.text((-bbox[0] + 4, -bbox[1] + 4), text, font=font, fill=(r, g, b, 255))
+    fill = (r, g, b, 255)
 
-    mm_per_px = (font_size_pt * 0.353) / pixel_size
-    return np.array(img), w * mm_per_px, h * mm_per_px
+    pil_align = {"ซ้าย": "left", "ขวา": "right"}.get(align, "center")
+
+    for i, line in enumerate(lines):
+        ly = i * line_spacing
+        lw = measure_px(line)
+        if pil_align == "left":
+            lx = 4
+        elif pil_align == "right":
+            lx = canvas_w - lw - 4
+        else:
+            lx = (canvas_w - lw) // 2
+        draw.text((lx, ly), line, font=font, fill=fill)
+
+    # Crop to tight content
+    bbox = img.getbbox()
+    if bbox:
+        img = img.crop((0, 0, canvas_w, bbox[3] + 4))
+
+    w_mm = img.width * mm_per_px
+    h_mm = img.height * mm_per_px
+    return np.array(img), w_mm, h_mm
 
 
 def wrap_text_for_preview(text: str, font_size_pt: float, width_mm: float) -> list:
@@ -304,49 +365,55 @@ def create_page_preview(
             label_width_mm = max(5.0, float(cfg.get("label_width_mm", size)))
             label_x_center = x + size / 2 + label_x_offset
             label_x_left = label_x_center - label_width_mm / 2
-
-            # Wrap text
-            lines = wrap_text_for_preview(value, label_font_size, label_width_mm)
-            line_height_mm = label_font_size * 0.353 * 2.5
-            total_h = len(lines) * line_height_mm + line_height_mm * 0.5
-
-            # Draw dashed bounding box
-            rgb = mc.to_rgb(color)
-            ax.add_patch(patches.Rectangle(
-                (label_x_left, label_y_pos - 0.5), label_width_mm, total_h,
-                linewidth=0.6, edgecolor=color, facecolor=(*rgb, 0.06),
-                linestyle="--", zorder=6,
-            ))
-
-            # Determine alignment
             align_label = cfg.get("label_align", "กลาง")
 
-            for li, line in enumerate(lines):
-                line_y = label_y_pos + li * line_height_mm
-
-                # Try PIL rendering first (proper Thai shaping)
-                rendered = False
-                if _THAI_FONT_PATH:
-                    arr, tw, th = render_thai_text_line(
-                        line, _THAI_FONT_PATH, label_font_size, "#555555")
-                    if arr is not None and tw > 0:
-                        if align_label == "ซ้าย":
-                            x0 = label_x_left + 0.5
-                        elif align_label == "ขวา":
-                            x0 = label_x_left + label_width_mm - 0.5 - tw
-                        else:
-                            x0 = label_x_center - tw / 2
-                        ax.imshow(arr, extent=[x0, x0 + tw, line_y + th, line_y],
-                                  aspect="auto", zorder=7, interpolation="bilinear")
-                        rendered = True
-
-                if not rendered:
+            # Render entire text block with PIL (proper Thai shaping)
+            rendered = False
+            if _THAI_FONT_PATH:
+                arr, tw, th = render_thai_text_image(
+                    value, _THAI_FONT_PATH, label_font_size,
+                    label_width_mm, align_label, "#555555")
+                if arr is not None and tw > 0 and th > 0:
+                    # Position based on alignment
                     if align_label == "ซ้าย":
-                        ha_mpl, text_x = "left", label_x_left + 0.5
+                        x0 = label_x_left
                     elif align_label == "ขวา":
-                        ha_mpl, text_x = "right", label_x_left + label_width_mm - 0.5
+                        x0 = label_x_left + label_width_mm - tw
                     else:
-                        ha_mpl, text_x = "center", label_x_center
+                        x0 = label_x_center - tw / 2
+
+                    # Draw dashed bounding box
+                    rgb = mc.to_rgb(color)
+                    box_h = max(th, 3)
+                    ax.add_patch(patches.Rectangle(
+                        (label_x_left, label_y_pos - 0.5), label_width_mm, box_h + 1,
+                        linewidth=0.6, edgecolor=color, facecolor=(*rgb, 0.06),
+                        linestyle="--", zorder=6,
+                    ))
+
+                    ax.imshow(arr, extent=[x0, x0 + tw, label_y_pos + th, label_y_pos],
+                              aspect="auto", zorder=7, interpolation="bilinear")
+                    rendered = True
+
+            if not rendered:
+                # Fallback: matplotlib text (no Thai shaping)
+                lines = wrap_text_for_preview(value, label_font_size, label_width_mm)
+                line_height_mm = label_font_size * 0.353 * 2.5
+                total_h = len(lines) * line_height_mm + line_height_mm * 0.5
+                rgb = mc.to_rgb(color)
+                ax.add_patch(patches.Rectangle(
+                    (label_x_left, label_y_pos - 0.5), label_width_mm, total_h,
+                    linewidth=0.6, edgecolor=color, facecolor=(*rgb, 0.06),
+                    linestyle="--", zorder=6,
+                ))
+                if align_label == "ซ้าย":
+                    ha_mpl, text_x = "left", label_x_left + 0.5
+                elif align_label == "ขวา":
+                    ha_mpl, text_x = "right", label_x_left + label_width_mm - 0.5
+                else:
+                    ha_mpl, text_x = "center", label_x_center
+                for li, line in enumerate(lines):
+                    line_y = label_y_pos + li * line_height_mm
                     ax.text(text_x, line_y, line,
                             ha=ha_mpl, va="top", fontsize=label_font_size,
                             color="#555", zorder=7)
