@@ -13,7 +13,7 @@ from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfbase.pdfmetrics import stringWidth
-from matplotlib.font_manager import FontProperties
+from matplotlib.font_manager import FontProperties, fontManager
 import textwrap
 import tempfile
 import os
@@ -41,8 +41,12 @@ COLORS = [
 ]
 
 
+import glob
+
+
 def find_thai_font() -> str | None:
     """Find a Thai-capable TTF/OTF font file on the current system."""
+    # 1. Check known exact paths first (fast)
     candidates = [
         # macOS
         "/System/Library/Fonts/Supplemental/Ayuthaya.ttf",
@@ -52,6 +56,11 @@ def find_thai_font() -> str | None:
         "/usr/share/fonts/truetype/thai-tlwg/Loma.ttf",
         "/usr/share/fonts/truetype/thai-tlwg/Garuda.ttf",
         "/usr/share/fonts/truetype/thai-tlwg/Sarabun.ttf",
+        "/usr/share/fonts/truetype/tlwg/TlwgTypo.ttf",
+        "/usr/share/fonts/truetype/tlwg/Loma.ttf",
+        "/usr/share/fonts/truetype/tlwg/Garuda.ttf",
+        "/usr/share/fonts/truetype/tlwg/Garuda-Bold.ttf",
+        "/usr/share/fonts/truetype/tlwg/Sarabun.ttf",
         # Linux / Docker (fonts-noto)
         "/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf",
         "/usr/share/fonts/opentype/noto/NotoSansThai-Regular.otf",
@@ -61,6 +70,23 @@ def find_thai_font() -> str | None:
     for path in candidates:
         if os.path.exists(path):
             return path
+
+    # 2. Search system fonts for any Thai-capable font (Garuda, Loma, Sarabun, etc.)
+    search_patterns = [
+        "/usr/share/fonts/**/Garuda*.ttf",
+        "/usr/share/fonts/**/Loma*.ttf",
+        "/usr/share/fonts/**/Sarabun*.ttf",
+        "/usr/share/fonts/**/TlwgTypo*.ttf",
+        "/usr/share/fonts/**/NotoSansThai*.ttf",
+        "/usr/share/fonts/**/NotoSansThai*.otf",
+        "/usr/share/fonts/**/*Thai*.ttf",
+        "/usr/share/fonts/**/*thai*.ttf",
+    ]
+    for pattern in search_patterns:
+        results = glob.glob(pattern, recursive=True)
+        if results:
+            return results[0]
+
     return None
 
 
@@ -71,6 +97,11 @@ if _THAI_FONT_PATH:
     try:
         pdfmetrics.registerFont(TTFont("ThaiFont", _THAI_FONT_PATH))
         _THAI_FONT_NAME = "ThaiFont"
+    except Exception:
+        pass
+    # Also register with matplotlib so preview works
+    try:
+        fontManager.addfont(_THAI_FONT_PATH)
     except Exception:
         pass
 

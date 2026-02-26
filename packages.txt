@@ -1,0 +1,2 @@
+fonts-tlwg-garuda
+fonts-thai-tlwg
