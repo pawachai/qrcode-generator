@@ -111,6 +111,35 @@ _THAI_FONT_PROPS: FontProperties | None = (
 )
 
 
+def render_thai_text_line(text: str, font_path: str, font_size_pt: float,
+                         color_hex: str = "#555555") -> tuple:
+    """Render one line of text with PIL (handles Thai shaping) → (np_array, w_mm, h_mm)."""
+    render_scale = 10
+    pixel_size = max(16, int(font_size_pt * render_scale))
+    try:
+        font = ImageFont.truetype(font_path, pixel_size)
+    except Exception:
+        return None, 0, 0
+
+    dummy = Image.new("RGBA", (1, 1))
+    draw = ImageDraw.Draw(dummy)
+    bbox = draw.textbbox((0, 0), text, font=font)
+    w = bbox[2] - bbox[0] + 8
+    h = bbox[3] - bbox[1] + 8
+    if w <= 0 or h <= 0:
+        return None, 0, 0
+
+    img = Image.new("RGBA", (w, h), (255, 255, 255, 0))
+    draw = ImageDraw.Draw(img)
+    r = int(color_hex[1:3], 16)
+    g = int(color_hex[3:5], 16)
+    b = int(color_hex[5:7], 16)
+    draw.text((-bbox[0] + 4, -bbox[1] + 4), text, font=font, fill=(r, g, b, 255))
+
+    mm_per_px = (font_size_pt * 0.353) / pixel_size
+    return np.array(img), w * mm_per_px, h * mm_per_px
+
+
 def wrap_text_for_preview(text: str, font_size_pt: float, width_mm: float) -> list:
     """Wrap text to fit within width_mm for matplotlib preview."""
     # Estimate: avg char width ≈ 0.55 × font_size_pt × 0.353 mm
@@ -291,22 +320,36 @@ def create_page_preview(
 
             # Determine alignment
             align_label = cfg.get("label_align", "กลาง")
-            if align_label == "ซ้าย":
-                ha_mpl, text_x = "left", label_x_left + 0.5
-            elif align_label == "ขวา":
-                ha_mpl, text_x = "right", label_x_left + label_width_mm - 0.5
-            else:
-                ha_mpl, text_x = "center", label_x_center
 
             for li, line in enumerate(lines):
                 line_y = label_y_pos + li * line_height_mm
-                if _THAI_FONT_PROPS is not None:
-                    fp = FontProperties(fname=_THAI_FONT_PATH, size=label_font_size)
+
+                # Try PIL rendering first (proper Thai shaping)
+                rendered = False
+                if _THAI_FONT_PATH:
+                    arr, tw, th = render_thai_text_line(
+                        line, _THAI_FONT_PATH, label_font_size, "#555555")
+                    if arr is not None and tw > 0:
+                        if align_label == "ซ้าย":
+                            x0 = label_x_left + 0.5
+                        elif align_label == "ขวา":
+                            x0 = label_x_left + label_width_mm - 0.5 - tw
+                        else:
+                            x0 = label_x_center - tw / 2
+                        ax.imshow(arr, extent=[x0, x0 + tw, line_y + th, line_y],
+                                  aspect="auto", zorder=7, interpolation="bilinear")
+                        rendered = True
+
+                if not rendered:
+                    if align_label == "ซ้าย":
+                        ha_mpl, text_x = "left", label_x_left + 0.5
+                    elif align_label == "ขวา":
+                        ha_mpl, text_x = "right", label_x_left + label_width_mm - 0.5
+                    else:
+                        ha_mpl, text_x = "center", label_x_center
                     ax.text(text_x, line_y, line,
-                            ha=ha_mpl, va="top", fontproperties=fp, color="#555", zorder=7)
-                else:
-                    ax.text(text_x, line_y, line,
-                            ha=ha_mpl, va="top", fontsize=label_font_size, color="#555", zorder=7)
+                            ha=ha_mpl, va="top", fontsize=label_font_size,
+                            color="#555", zorder=7)
 
     pad = 8
     ax.set_xlim(-pad, page_w_mm + pad + stack_count * 2)
