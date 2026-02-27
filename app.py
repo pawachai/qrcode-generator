@@ -20,9 +20,6 @@ import os
 import math
 import numpy as np
 import glob
-import subprocess
-import platform
-import sys
 
 # ──────────────────────────────────────────────
 # Page sizes
@@ -44,26 +41,9 @@ COLORS = [
     "#d35400", "#16a085", "#c0392b", "#2980b9",
 ]
 
-# ──────────────────────────────────────────────
-# Helper function สำหรับเปิดหน้าต่างเลือกโฟลเดอร์ (ข้ามข้อจำกัด Threading)
-# ──────────────────────────────────────────────
-def open_folder_picker():
-    """เปิด Dialog เลือกโฟลเดอร์ โดยใช้ Subprocess เพื่อเลี่ยง Main Thread Crash"""
-    try:
-        if platform.system() == "Darwin":  # สำหรับ macOS (Macbook)
-            cmd = ['osascript', '-e', 'POSIX path of (choose folder with prompt "เลือกโฟลเดอร์รูปภาพ")']
-            result = subprocess.check_output(cmd, text=True).strip()
-            return result
-        else:  # สำหรับ Windows / Linux
-            script = "import tkinter as tk, tkinter.filedialog as fd; root=tk.Tk(); root.withdraw(); root.attributes('-topmost', True); print(fd.askdirectory())"
-            cmd = [sys.executable, "-c", script]
-            result = subprocess.check_output(cmd, text=True).strip()
-            return result
-    except subprocess.CalledProcessError:
-        return "" # ผู้ใช้กด Cancel
-
 
 def find_thai_font() -> str | None:
+    """Find a Thai-capable TTF/OTF font file on the current system."""
     bundled = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts", "Sarabun-Regular.ttf")
     if os.path.exists(bundled):
         return bundled
@@ -395,12 +375,15 @@ def create_page_preview(
         )
         ax.add_patch(qr_rect)
 
+        # Draw actual QR image or Folder Image
         try:
+            # เช็คว่า value เป็นไฟล์ภาพที่มีอยู่จริงในเครื่องหรือไม่
             if isinstance(value, str) and os.path.isfile(value) and value.lower().endswith(('.png', '.jpg', '.jpeg')):
                 img = Image.open(value).convert("RGB")
                 img = img.resize((200, 200), Image.NEAREST)
                 qr_arr = np.array(img)
             else:
+                # ถ้าไม่ใช่ ให้ทำการสร้าง QR Code ตามปกติ
                 qr_img = generate_qr_image(value, size_px=200)
                 qr_arr = np.array(qr_img)
                 
@@ -527,6 +510,7 @@ def generate_pdf(
             x_pt = cfg["x_mm"] * mm
             y_pt = page_h - cfg["y_mm"] * mm - cfg["size_mm"] * mm
 
+            # ตรวจสอบว่าเป็นไฟล์รูปภาพ หรือ ต้องสร้าง QR Code
             if isinstance(value, str) and os.path.isfile(value) and value.lower().endswith(('.png', '.jpg', '.jpeg')):
                 c.drawImage(value, x_pt, y_pt, width=cfg["size_mm"] * mm, height=cfg["size_mm"] * mm)
             else:
@@ -697,19 +681,31 @@ def main():
 
     if data_source == "📂 ดึงรูปภาพจากโฟลเดอร์ (PNG/JPG)":
         
+        # --- เพิ่มระบบปุ่มเลือกโฟลเดอร์ด้วย Tkinter ---
+        import tkinter as tk
+        from tkinter import filedialog
+        
+        # เก็บค่า Path ไว้ใน session_state เพื่อไม่ให้หายตอนแอปรีเฟรช
         if "folder_path" not in st.session_state:
             st.session_state.folder_path = ""
             
         c_path1, c_path2 = st.columns([4, 1])
         
         with c_path2:
-            st.markdown("<div style='margin-top: 27px;'></div>", unsafe_allow_html=True)
+            st.markdown("<div style='margin-top: 27px;'></div>", unsafe_allow_html=True) # ดันปุ่มให้ตรงกับกล่องข้อความ
             if st.button("📁 เลือกจากเครื่อง...", use_container_width=True):
-                # ใช้ฟังก์ชันที่แยกไปรันภายนอกแล้ว จะไม่เกิด Error เรื่อง Thread ครับ
-                folder_selected = open_folder_picker()
+                # สร้างหน้าต่างเลือกโฟลเดอร์
+                root = tk.Tk()
+                root.withdraw() # ซ่อนหน้าต่างหลักของ Tkinter
+                root.wm_attributes('-topmost', 1) # บังคับให้อยู่หน้าสุดของจอ
+                folder_selected = filedialog.askdirectory(master=root, title="เลือกโฟลเดอร์รูปภาพ")
+                root.destroy()
+                
+                # ถ้าผู้ใช้กดเลือกโฟลเดอร์ (ไม่ได้กด Cancel)
                 if folder_selected:
+                    # ปรับเป็น Path ของระบบที่ใช้อยู่
                     st.session_state.folder_path = os.path.normpath(folder_selected)
-                    st.rerun()
+                    st.rerun() # รีเฟรชหน้าเว็บ 1 รอบเพื่ออัปเดตข้อมูลลงช่อง Text
                     
         with c_path1:
             folder_path = st.text_input(
@@ -717,7 +713,9 @@ def main():
                 value=st.session_state.folder_path,
                 help="พิมพ์ Path เอง หรือกดปุ่มด้านขวาเพื่อเปิดหน้าต่างเลือก"
             )
+            # อัปเดตค่ากลับเข้าไปกรณีผู้ใช้พิมพ์แก้ไขเองด้วยมือ
             st.session_state.folder_path = folder_path
+        # ---------------------------------------------
         
         if not folder_path or not os.path.exists(folder_path):
             st.info("👆 กรุณาระบุ Path โฟลเดอร์ หรือกดปุ่ม 'เลือกจากเครื่อง...'")
@@ -735,11 +733,9 @@ def main():
             "Image_Path": image_files,
             "File_Name": [os.path.basename(f) for f in image_files]
         })
-        
         st.success(f"✅ พบรูปภาพทั้งหมด **{len(df):,}** ไฟล์")
         with st.expander("👀 ดูรายชื่อไฟล์", expanded=False):
-            # แปลงเป็น String กัน Error Pyarrow
-            st.dataframe(df.astype(str), height=300)
+            st.dataframe(df, height=300)
 
     else:
         uploaded_file = st.file_uploader("เลือกไฟล์ Excel (.xlsx, .xls)", type=["xlsx", "xls"])
@@ -784,8 +780,7 @@ def main():
 
         st.success(f"✅ โหลดสำเร็จ — **{len(df):,}** แถว, **{len(df.columns)}** คอลัมน์  (Sheet: {selected_sheet})")
         with st.expander("👀 ดูข้อมูลทั้งหมด", expanded=False):
-            # แปลงเป็น String กัน Error Pyarrow
-            st.dataframe(df.astype(str), height=300)
+            st.dataframe(df, height=300)
 
     # ─── STEP 2 : SELECT COLUMNS & RANGE ───
     st.markdown(
@@ -795,6 +790,7 @@ def main():
 
     col_options = df.columns.tolist()
     
+    # ถ้าเลือกโฟลเดอร์รูปภาพ แนะนำให้ดึงคอลัมน์ Image_Path เป็นค่าเริ่มต้น
     default_selection = ["Image_Path"] if "Image_Path" in col_options else ([col_options[0]] if col_options else [])
     
     selected_cols = st.multiselect(
@@ -1116,6 +1112,7 @@ def main():
             mime="application/pdf",
             use_container_width=True,
         )
+
 
 if __name__ == "__main__":
     main()
