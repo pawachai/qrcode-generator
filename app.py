@@ -94,10 +94,6 @@ if _THAI_FONT_PATH:
     except Exception:
         pass
 
-_THAI_FONT_PROPS: FontProperties | None = (
-    FontProperties(fname=_THAI_FONT_PATH) if _THAI_FONT_PATH else None
-)
-
 def render_thai_text_image(text: str, font_path: str, font_size_pt: float,
                           width_mm: float, align: str = "center",
                           color_hex: str = "#555555") -> tuple:
@@ -299,7 +295,7 @@ def wrap_text_for_pdf(text: str, font_name: str, font_size: float, max_width_pt:
         return lines or [text]
 
 def smart_str(val) -> str:
-    if pd.isna(val):
+    if pd.isna(val) or val is None:
         return ""
     if isinstance(val, float) and val == int(val):
         return str(int(val))
@@ -317,6 +313,16 @@ def generate_qr_image(data: str, size_px: int = 300) -> Image.Image:
     img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
     img = img.resize((size_px, size_px), Image.NEAREST)
     return img
+
+def get_image_aspect_ratio(img_path):
+    """คำนวณสัดส่วนรูปภาพ (Height / Width)"""
+    if isinstance(img_path, str) and os.path.isfile(img_path):
+        try:
+            with Image.open(img_path) as img:
+                return img.height / img.width
+        except Exception:
+            return 1.0
+    return 1.0
 
 def create_page_preview(
     page_w_mm, page_h_mm,
@@ -348,16 +354,20 @@ def create_page_preview(
     for cfg in qr_configs:
         x = cfg["x_mm"]
         y = cfg["y_mm"]
-        size = cfg["size_mm"]
+        w = cfg["width_mm"]
+        h = cfg["height_mm"]
         color = cfg["color"]
         col_name = cfg["col_name"]
         value = smart_str(cfg["value"])
         label_value = smart_str(cfg.get("label_value", value))
 
+        if not value: 
+            continue
+
         is_active = cfg.get("is_active", False)
         border_w = 3.5 if is_active else 1.5
         qr_rect = patches.FancyBboxPatch(
-            (x, y), size, size,
+            (x, y), w, h,
             boxstyle="round,pad=0.3",
             linewidth=border_w, edgecolor=color, facecolor="#fafafa",
         )
@@ -366,7 +376,6 @@ def create_page_preview(
         try:
             if isinstance(value, str) and os.path.isfile(value) and value.lower().endswith(('.png', '.jpg', '.jpeg')):
                 img = Image.open(value).convert("RGB")
-                img = img.resize((200, 200), Image.NEAREST)
                 qr_arr = np.array(img)
             else:
                 qr_img = generate_qr_image(value, size_px=200)
@@ -374,20 +383,20 @@ def create_page_preview(
                 
             ax.imshow(
                 qr_arr,
-                extent=[x + 0.5, x + size - 0.5, y + size - 0.5, y + 0.5],
+                extent=[x + 0.5, x + w - 0.5, y + h - 0.5, y + 0.5],
                 aspect="auto", zorder=5, interpolation="nearest",
             )
         except Exception:
-            ax.text(x + size / 2, y + size / 2, "IMG/QR", ha="center", va="center",
-                    fontsize=max(6, size * 0.3), color="#333", weight="bold")
+            ax.text(x + w / 2, y + h / 2, "IMG/QR", ha="center", va="center",
+                    fontsize=max(6, w * 0.3), color="#333", weight="bold")
 
         badge_text = str(col_name)
         badge_w = max(10, len(badge_text) * 2.2 + 4)
         badge_h = 3.5
-        badge_x = x + (size - badge_w) / 2
+        badge_x = x + (w - badge_w) / 2
         badge_y = y - badge_h - 1.5
         if badge_y < -5:
-            badge_y = y + size + 1.5
+            badge_y = y + h + 1.5
 
         badge = patches.FancyBboxPatch(
             (badge_x, badge_y), badge_w, badge_h,
@@ -399,13 +408,13 @@ def create_page_preview(
                 ha="center", va="center", fontsize=5.5, color="white", weight="bold", zorder=7)
 
         if cfg.get("show_label", True):
-            label_y_pos = y + size + 2
+            label_y_pos = y + h + 2
             if badge_y > y:
                 label_y_pos = badge_y + badge_h + 1
             label_font_size = cfg.get("label_font_size", 7)
             label_x_offset = cfg.get("label_x_offset", 0)
-            label_width_mm = max(5.0, float(cfg.get("label_width_mm", size)))
-            label_x_center = x + size / 2 + label_x_offset
+            label_width_mm = max(5.0, float(cfg.get("label_width_mm", w)))
+            label_x_center = x + w / 2 + label_x_offset
             label_x_left = label_x_center - label_width_mm / 2
             align_label = cfg.get("label_align", "กลาง")
 
@@ -487,21 +496,23 @@ def generate_pdf(
 
         for col_name, cfg in col_configs.items():
             raw = df_selected[col_name].iloc[row_idx]
-            if pd.isna(raw):
+            if pd.isna(raw) or raw is None or raw == "":
                 continue
             
             value = smart_str(raw)
             x_pt = cfg["x_mm"] * mm
-            y_pt = page_h - cfg["y_mm"] * mm - cfg["size_mm"] * mm
+            w_pt = cfg["width_mm"] * mm
+            h_pt = cfg["height_mm"] * mm
+            y_pt = page_h - cfg["y_mm"] * mm - h_pt
 
             if isinstance(value, str) and os.path.isfile(value) and value.lower().endswith(('.png', '.jpg', '.jpeg')):
-                c.drawImage(value, x_pt, y_pt, width=cfg["size_mm"] * mm, height=cfg["size_mm"] * mm)
+                c.drawImage(value, x_pt, y_pt, width=w_pt, height=h_pt)
             else:
-                qr_img = generate_qr_image(value, size_px=max(200, int(cfg["size_mm"] * 10)))
+                qr_img = generate_qr_image(value, size_px=max(200, int(cfg["width_mm"] * 10)))
                 tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
                 qr_img.save(tmp, format="PNG")
                 tmp.close()
-                c.drawImage(tmp.name, x_pt, y_pt, width=cfg["size_mm"] * mm, height=cfg["size_mm"] * mm)
+                c.drawImage(tmp.name, x_pt, y_pt, width=w_pt, height=h_pt)
                 os.unlink(tmp.name)
 
             if cfg.get("show_label", True):
@@ -515,8 +526,8 @@ def generate_pdf(
                 label_value = smart_str(raw_label)
                 font_size = cfg.get("label_font_size", 7)
                 x_offset_pt = cfg.get("label_x_offset", 0) * mm
-                label_width_mm = max(5.0, float(cfg.get("label_width_mm", cfg["size_mm"])))
-                label_x_center = x_pt + (cfg["size_mm"] * mm) / 2 + x_offset_pt
+                label_width_mm = max(5.0, float(cfg.get("label_width_mm", cfg["width_mm"])))
+                label_x_center = x_pt + w_pt / 2 + x_offset_pt
                 align_label = cfg.get("label_align", "กลาง")
 
                 rendered_pdf = False
@@ -613,6 +624,12 @@ def main():
         unsafe_allow_html=True,
     )
 
+    # เก็บ Folder ชั่วคราวไว้ตลอดอายุ Session
+    if "temp_dir" not in st.session_state:
+        st.session_state.temp_dir = tempfile.mkdtemp()
+    if "img_group_count" not in st.session_state:
+        st.session_state.img_group_count = 1
+
     st.markdown('<p class="main-title">🔲 QR Code & Image PDF Generator</p>', unsafe_allow_html=True)
     st.markdown(
         '<p class="sub-title">นำเข้าข้อมูลจาก Excel (สร้าง QR) หรือ อัปโหลดรูปภาพ → จัดตำแหน่งบนหน้ากระดาษ '
@@ -662,39 +679,47 @@ def main():
     )
 
     if data_source == "🖼️ อัปโหลดรูปภาพหลายไฟล์ (PNG/JPG)":
+        if st.button("➕ เพิ่มกลุ่มรูปภาพ (คอลัมน์ใหม่)", use_container_width=False):
+            st.session_state.img_group_count += 1
+            st.rerun()
+
+        dict_data = {}
+        max_len = 0
+        total_uploaded = 0
         
-        # ใช้ file_uploader แบบ accept_multiple_files=True
-        uploaded_images = st.file_uploader(
-            "อัปโหลดไฟล์รูปภาพ (สามารถคลุมดำหลายๆ ไฟล์แล้วลากมาวางได้เลย)", 
-            type=["png", "jpg", "jpeg"], 
-            accept_multiple_files=True
-        )
-        
-        if not uploaded_images:
-            st.info("👆 กรุณาอัปโหลดไฟล์รูปภาพเพื่อเริ่มต้น")
+        for g in range(1, st.session_state.img_group_count + 1):
+            uploaded_images = st.file_uploader(
+                f"📂 อัปโหลดกลุ่มรูปภาพที่ {g} (คอลัมน์ {g})", 
+                type=["png", "jpg", "jpeg"], 
+                accept_multiple_files=True,
+                key=f"uploader_{g}"
+            )
+            
+            paths = []
+            if uploaded_images:
+                for img_file in uploaded_images:
+                    temp_path = os.path.join(st.session_state.temp_dir, f"g{g}_{img_file.name}")
+                    with open(temp_path, "wb") as f:
+                        f.write(img_file.getbuffer())
+                    paths.append(temp_path)
+                    total_uploaded += 1
+                    
+            col_name = f"Image_Group_{g}"
+            dict_data[col_name] = paths
+            max_len = max(max_len, len(paths))
+            
+        if total_uploaded == 0:
+            st.info("👆 กรุณาอัปโหลดรูปภาพอย่างน้อย 1 กลุ่มเพื่อเริ่มต้น")
             st.stop()
             
-        # สร้างโฟลเดอร์ชั่วคราวบน Server
-        temp_dir = tempfile.mkdtemp()
-        image_paths = []
-        image_names = []
-        
-        for img_file in uploaded_images:
-            temp_path = os.path.join(temp_dir, img_file.name)
-            with open(temp_path, "wb") as f:
-                f.write(img_file.getbuffer())
-                
-            image_paths.append(temp_path)
-            image_names.append(img_file.name)
+        # เติมช่องว่าง (None) ให้ทุกคอลัมน์มีจำนวนแถวเท่ากัน
+        for k in dict_data.keys():
+            dict_data[k] = dict_data[k] + [None] * (max_len - len(dict_data[k]))
             
-        df = pd.DataFrame({
-            "Image_Path": image_paths,
-            "File_Name": image_names
-        })
+        df = pd.DataFrame(dict_data)
         
-        st.success(f"✅ อัปโหลดรูปภาพสำเร็จ **{len(df):,}** ไฟล์")
-        with st.expander("👀 ดูรายชื่อไฟล์ที่อัปโหลด", expanded=False):
-            # df.astype(str) เพื่อกัน Error ตอนแสดงผลตาราง
+        st.success(f"✅ อัปโหลดรูปภาพสำเร็จ รวม **{total_uploaded:,}** ไฟล์ (สร้างได้สูงสุด {max_len} หน้า)")
+        with st.expander("👀 ดูรายชื่อไฟล์รูปภาพ", expanded=False):
             st.dataframe(df.astype(str), height=300)
 
     else:
@@ -750,7 +775,9 @@ def main():
 
     col_options = df.columns.tolist()
     
-    default_selection = ["Image_Path"] if "Image_Path" in col_options else ([col_options[0]] if col_options else [])
+    # เลือกทุก Image_Group อัตโนมัติถ้ามี
+    img_cols = [c for c in col_options if c.startswith("Image_Group_")]
+    default_selection = img_cols if img_cols else ([col_options[0]] if col_options else [])
     
     selected_cols = st.multiselect(
         "เลือกคอลัมน์ที่ต้องการสร้าง QR Code หรือแสดงรูปภาพ (เลือกได้หลายคอลัมน์)",
@@ -813,10 +840,18 @@ def main():
     for i, col_name in enumerate(selected_cols):
         cn = str(col_name)
         if cn not in st.session_state.qr_positions:
+            # คำนวณ Aspect Ratio เพื่อไม่ให้รูปเบี้ยว
+            ratio = 1.0
+            valid_vals = df_selected[col_name].dropna()
+            if len(valid_vals) > 0:
+                first_val = valid_vals.iloc[0]
+                ratio = get_image_aspect_ratio(first_val)
+                
             st.session_state.qr_positions[cn] = {
                 "x": 10,
                 "y": max(0, min(10 + i * (default_qr_size + 20), max_y - default_qr_size)),
-                "size": default_qr_size,
+                "width": default_qr_size,
+                "ratio": ratio,
                 "label": default_show_label,
                 "label_col": cn,
                 "label_row_offset": 0,
@@ -828,14 +863,15 @@ def main():
 
     def on_col_select():
         cn = str(st.session_state._active_qr)
-        pos = st.session_state.qr_positions.get(cn, {"x": 10, "y": 10, "size": default_qr_size, "label": True})
+        pos = st.session_state.qr_positions.get(cn, {"x": 10, "y": 10, "width": default_qr_size, "ratio": 1.0, "label": True})
         st.session_state._edit_x = pos["x"]
         st.session_state._edit_y = pos["y"]
-        st.session_state._edit_size = pos["size"]
+        st.session_state._edit_width = pos["width"]
+        st.session_state._edit_ratio = pos.get("ratio", 1.0)
         st.session_state._edit_label = pos["label"]
         st.session_state._edit_label_x_offset = pos.get("label_x_offset", 0)
         st.session_state._edit_label_font_size = pos.get("label_font_size", default_label_size)
-        st.session_state._edit_label_width = pos.get("label_width_mm", default_qr_size)
+        st.session_state._edit_label_width = pos.get("label_width_mm", pos["width"])
         st.session_state._edit_label_align = pos.get("label_align", "กลาง")
         st.session_state._last_active_cn = cn
 
@@ -844,13 +880,14 @@ def main():
         st.session_state.qr_positions[cn] = {
             "x": st.session_state._edit_x,
             "y": st.session_state._edit_y,
-            "size": st.session_state._edit_size,
+            "width": st.session_state._edit_width,
+            "ratio": st.session_state.get("_edit_ratio", 1.0),
             "label": st.session_state._edit_label,
             "label_col": st.session_state.get("_edit_label_col", cn),
             "label_row_offset": st.session_state.get("_edit_label_row_offset", 0),
             "label_x_offset": st.session_state.get("_edit_label_x_offset", 0),
             "label_font_size": st.session_state.get("_edit_label_font_size", default_label_size),
-            "label_width_mm": st.session_state.get("_edit_label_width", default_qr_size),
+            "label_width_mm": st.session_state.get("_edit_label_width", st.session_state._edit_width),
             "label_align": st.session_state.get("_edit_label_align", "กลาง"),
         }
 
@@ -861,20 +898,21 @@ def main():
         st.session_state._active_qr = first_col
 
     active_cn = str(st.session_state._active_qr)
-    pos = st.session_state.qr_positions.get(active_cn, {"x": 10, "y": 10, "size": default_qr_size, "label": True})
+    pos = st.session_state.qr_positions.get(active_cn, {"x": 10, "y": 10, "width": default_qr_size, "ratio": 1.0, "label": True})
 
     need_init = "_edit_x" not in st.session_state
     col_changed = st.session_state.get("_last_active_cn") != active_cn
     if need_init or col_changed:
         st.session_state._edit_x = pos["x"]
         st.session_state._edit_y = pos["y"]
-        st.session_state._edit_size = pos["size"]
+        st.session_state._edit_width = pos["width"]
+        st.session_state._edit_ratio = pos.get("ratio", 1.0)
         st.session_state._edit_label = pos["label"]
         st.session_state._edit_label_col = pos.get("label_col", active_cn)
         st.session_state._edit_label_row_offset = pos.get("label_row_offset", 0)
         st.session_state._edit_label_x_offset = pos.get("label_x_offset", 0)
         st.session_state._edit_label_font_size = pos.get("label_font_size", default_label_size)
-        st.session_state._edit_label_width = pos.get("label_width_mm", default_qr_size)
+        st.session_state._edit_label_width = pos.get("label_width_mm", pos["width"])
         st.session_state._edit_label_align = pos.get("label_align", "กลาง")
         st.session_state._last_active_cn = active_cn
 
@@ -896,13 +934,21 @@ def main():
         active_cn = str(st.session_state._active_qr)
         active_idx = col_str_list.index(active_cn) if active_cn in col_str_list else 0
         active_color = COLORS[active_idx % len(COLORS)]
-        sample_val = smart_str(df_selected[selected_cols[active_idx]].iloc[0]) if len(df_selected) > 0 else ""
+        
+        # หาทีค่าที่มีอยู่จริงเพื่อมาแสดงตัวอย่าง
+        valid_sample = df_selected[selected_cols[active_idx]].dropna()
+        sample_val = smart_str(valid_sample.iloc[0]) if len(valid_sample) > 0 else ""
+        
+        if len(sample_val) > 30 and ("/" in sample_val or "\\" in sample_val):
+            sample_val_display = "[ไฟล์รูปภาพ] " + os.path.basename(sample_val)
+        else:
+            sample_val_display = sample_val
 
         st.markdown(
             f'<div style="border-left: 4px solid {active_color}; padding: 10px 14px; '
             f'margin: 10px 0; background: {active_color}11; border-radius: 0 8px 8px 0;">'
             f'<b style="color:{active_color}; font-size:1.1rem;">🔲 {active_cn}</b>'
-            f'<br><span style="font-size:0.85rem; color:#888;">ตัวอย่างค่า: {sample_val}</span></div>',
+            f'<br><span style="font-size:0.85rem; color:#888;">ตัวอย่าง: {sample_val_display}</span></div>',
             unsafe_allow_html=True,
         )
 
@@ -916,10 +962,15 @@ def main():
 
         c3, c4 = st.columns(2)
         with c3:
-            st.number_input("ขนาด QR/ภาพ (mm)", min_value=3, max_value=500,
-                            step=1, key="_edit_size", on_change=save_back)
+            st.number_input("↔ ความกว้างรูป/QR (mm)", min_value=3, max_value=500,
+                            step=1, key="_edit_width", on_change=save_back)
         with c4:
-            st.checkbox("แสดงข้อความด้านล่าง", key="_edit_label", on_change=save_back)
+            # คำนวณและแสดงความสูงอัตโนมัติ
+            cur_ratio = st.session_state.get("_edit_ratio", 1.0)
+            calc_height = st.session_state._edit_width * cur_ratio
+            st.markdown(f"<br><span style='color:#555;'>↕ สูงอัตโนมัติ:<br><b>{calc_height:.1f} mm</b></span>", unsafe_allow_html=True)
+            
+        st.checkbox("แสดงข้อความด้านล่าง", key="_edit_label", on_change=save_back)
 
         if st.session_state.get("_edit_label", False):
             p_now = st.session_state.qr_positions.get(active_cn, {})
@@ -928,7 +979,7 @@ def main():
             st.session_state["_edit_label_row_offset"] = int(p_now.get("label_row_offset", 0))
             st.session_state["_edit_label_x_offset"] = int(p_now.get("label_x_offset", 0))
             st.session_state["_edit_label_font_size"] = int(p_now.get("label_font_size", default_label_size))
-            st.session_state["_edit_label_width"] = int(p_now.get("label_width_mm", default_qr_size))
+            st.session_state["_edit_label_width"] = int(p_now.get("label_width_mm", p_now.get("width", default_qr_size)))
             st.session_state["_edit_label_align"] = p_now.get("label_align", "กลาง")
             c_lbl1, c_lbl2 = st.columns(2)
             with c_lbl1:
@@ -964,37 +1015,48 @@ def main():
                 marker = " 👈" if cn_str == active_cn else ""
                 st.markdown(
                     f'<span style="color:{clr}; font-weight:600;">{cn_str}</span> '
-                    f'— X:{p.get("x",0)} Y:{p.get("y",0)} ขนาด:{p.get("size",30)}mm{marker}',
+                    f'— X:{p.get("x",0)} Y:{p.get("y",0)} กว้าง:{p.get("width",30)}mm{marker}',
                     unsafe_allow_html=True,
                 )
 
     col_configs = {}
     qr_preview_configs = []
+    
+    # หาสิ่งที่จะแสดงในหน้า Preview (หน้า 1 หรือหน้าที่ข้อมูลไม่ว่าง)
     for i, col_name in enumerate(selected_cols):
         cn_str = str(col_name)
         color = COLORS[i % len(COLORS)]
-        p = st.session_state.qr_positions.get(cn_str, {"x": 10, "y": 10, "size": default_qr_size, "label": True})
-        sv = smart_str(df_selected[col_name].iloc[0]) if len(df_selected) > 0 else ""
+        p = st.session_state.qr_positions.get(cn_str, {"x": 10, "y": 10, "width": default_qr_size, "ratio": 1.0, "label": True})
+        
+        # หา value สำหรับโชว์
+        valid_vals = df_selected[col_name].dropna()
+        sv = smart_str(valid_vals.iloc[0]) if len(valid_vals) > 0 else ""
+        
         label_col = p.get("label_col", cn_str)
         label_offset = p.get("label_row_offset", 0)
         sv_label = ""
         if len(df_selected) > 0 and label_col in df_selected.columns:
             preview_idx = 0 + label_offset
             if 0 <= preview_idx < len(df_selected):
-                sv_label = smart_str(df_selected[label_col].iloc[preview_idx])
+                lbl_val = df_selected[label_col].iloc[preview_idx]
+                sv_label = smart_str(lbl_val) if pd.notna(lbl_val) else ""
         else:
             sv_label = sv
+            
+        w_mm = p["width"]
+        h_mm = p["width"] * p.get("ratio", 1.0)
         
         col_configs[col_name] = {
             "x_mm": p["x"],
             "y_mm": p["y"],
-            "size_mm": p["size"],
+            "width_mm": w_mm,
+            "height_mm": h_mm,
             "show_label": p["label"],
             "label_col": label_col,
             "label_row_offset": label_offset,
             "label_font_size": p.get("label_font_size", default_label_size),
             "label_x_offset": p.get("label_x_offset", 0),
-            "label_width_mm": p.get("label_width_mm", p["size"]),
+            "label_width_mm": p.get("label_width_mm", w_mm),
             "label_align": p.get("label_align", "กลาง"),
         }
 
@@ -1002,14 +1064,15 @@ def main():
             "col_name": cn_str,
             "x_mm": p["x"],
             "y_mm": p["y"],
-            "size_mm": p["size"],
+            "width_mm": w_mm,
+            "height_mm": h_mm,
             "value": sv,
             "label_value": sv_label,
             "color": color,
             "show_label": p["label"],
             "label_font_size": p.get("label_font_size", default_label_size),
             "label_x_offset": p.get("label_x_offset", 0),
-            "label_width_mm": p.get("label_width_mm", p["size"]),
+            "label_width_mm": p.get("label_width_mm", w_mm),
             "label_align": p.get("label_align", "กลาง"),
             "is_active": (cn_str == active_cn),
         })
@@ -1026,7 +1089,7 @@ def main():
         plt.close(fig)
 
         st.caption(
-            f"📌 หน้าที่ 1 จากทั้งหมด {total_rows:,} หน้า — "
+            f"📌 หน้าตัวอย่างจากทั้งหมด {total_rows:,} หน้า — "
             f"ทุกหน้ามีตำแหน่งเดียวกัน ข้อมูลต่างกันตามแถว"
         )
 
