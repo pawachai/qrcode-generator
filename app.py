@@ -6,7 +6,6 @@ from PIL import Image, ImageDraw, ImageFont
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import matplotlib.colors as mc
-from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4, A3, A5, A6, B4, B5, letter, legal, landscape
 from reportlab.lib.units import mm
@@ -17,7 +16,6 @@ from matplotlib.font_manager import FontProperties, fontManager
 import textwrap
 import tempfile
 import os
-import math
 import numpy as np
 import glob
 
@@ -41,9 +39,7 @@ COLORS = [
     "#d35400", "#16a085", "#c0392b", "#2980b9",
 ]
 
-
 def find_thai_font() -> str | None:
-    """Find a Thai-capable TTF/OTF font file on the current system."""
     bundled = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts", "Sarabun-Regular.ttf")
     if os.path.exists(bundled):
         return bundled
@@ -85,7 +81,6 @@ def find_thai_font() -> str | None:
 
     return None
 
-
 _THAI_FONT_PATH = find_thai_font()
 _THAI_FONT_NAME = "Helvetica"
 if _THAI_FONT_PATH:
@@ -102,7 +97,6 @@ if _THAI_FONT_PATH:
 _THAI_FONT_PROPS: FontProperties | None = (
     FontProperties(fname=_THAI_FONT_PATH) if _THAI_FONT_PATH else None
 )
-
 
 def render_thai_text_image(text: str, font_path: str, font_size_pt: float,
                           width_mm: float, align: str = "center",
@@ -180,7 +174,6 @@ def render_thai_text_image(text: str, font_path: str, font_size_pt: float,
     w_mm = img.width * mm_per_px
     h_mm = img.height * mm_per_px
     return np.array(img), w_mm, h_mm
-
 
 def render_thai_text_pil(text: str, font_path: str, font_size_pt: float,
                          width_mm: float, align: str = "center",
@@ -262,7 +255,6 @@ def render_thai_text_pil(text: str, font_path: str, font_size_pt: float,
     h_mm = bg.height * mm_per_px
     return bg, w_mm, h_mm
 
-
 def wrap_text_for_preview(text: str, font_size_pt: float, width_mm: float) -> list:
     char_w_mm = max(0.5, font_size_pt * 0.353 * 0.55)
     chars_per_line = max(3, int(width_mm / char_w_mm))
@@ -270,7 +262,6 @@ def wrap_text_for_preview(text: str, font_size_pt: float, width_mm: float) -> li
         return textwrap.wrap(text, width=chars_per_line) or [text]
     else:
         return [text[i:i + chars_per_line] for i in range(0, len(text), chars_per_line)] or [text]
-
 
 def wrap_text_for_pdf(text: str, font_name: str, font_size: float, max_width_pt: float) -> list:
     def measure(s):
@@ -307,14 +298,12 @@ def wrap_text_for_pdf(text: str, font_name: str, font_size: float, max_width_pt:
             lines.append(current)
         return lines or [text]
 
-
 def smart_str(val) -> str:
     if pd.isna(val):
         return ""
     if isinstance(val, float) and val == int(val):
         return str(int(val))
     return str(val)
-
 
 def generate_qr_image(data: str, size_px: int = 300) -> Image.Image:
     qr = qrcode.QRCode(
@@ -328,7 +317,6 @@ def generate_qr_image(data: str, size_px: int = 300) -> Image.Image:
     img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
     img = img.resize((size_px, size_px), Image.NEAREST)
     return img
-
 
 def create_page_preview(
     page_w_mm, page_h_mm,
@@ -375,15 +363,12 @@ def create_page_preview(
         )
         ax.add_patch(qr_rect)
 
-        # Draw actual QR image or Folder Image
         try:
-            # เช็คว่า value เป็นไฟล์ภาพที่มีอยู่จริงในเครื่องหรือไม่
             if isinstance(value, str) and os.path.isfile(value) and value.lower().endswith(('.png', '.jpg', '.jpeg')):
                 img = Image.open(value).convert("RGB")
                 img = img.resize((200, 200), Image.NEAREST)
                 qr_arr = np.array(img)
             else:
-                # ถ้าไม่ใช่ ให้ทำการสร้าง QR Code ตามปกติ
                 qr_img = generate_qr_image(value, size_px=200)
                 qr_arr = np.array(qr_img)
                 
@@ -480,7 +465,6 @@ def create_page_preview(
     plt.tight_layout()
     return fig
 
-
 def generate_pdf(
     df_selected,
     col_configs,
@@ -510,7 +494,6 @@ def generate_pdf(
             x_pt = cfg["x_mm"] * mm
             y_pt = page_h - cfg["y_mm"] * mm - cfg["size_mm"] * mm
 
-            # ตรวจสอบว่าเป็นไฟล์รูปภาพ หรือ ต้องสร้าง QR Code
             if isinstance(value, str) and os.path.isfile(value) and value.lower().endswith(('.png', '.jpg', '.jpeg')):
                 c.drawImage(value, x_pt, y_pt, width=cfg["size_mm"] * mm, height=cfg["size_mm"] * mm)
             else:
@@ -585,7 +568,6 @@ def generate_pdf(
     pdf_buf.seek(0)
     return pdf_buf, total_rows
 
-
 # ══════════════════════════════════════════════
 # MAIN APP
 # ══════════════════════════════════════════════
@@ -633,7 +615,7 @@ def main():
 
     st.markdown('<p class="main-title">🔲 QR Code & Image PDF Generator</p>', unsafe_allow_html=True)
     st.markdown(
-        '<p class="sub-title">นำเข้าข้อมูลจาก Excel (สร้าง QR) หรือ ดึงรูปภาพจากโฟลเดอร์ → จัดตำแหน่งบนหน้ากระดาษ '
+        '<p class="sub-title">นำเข้าข้อมูลจาก Excel (สร้าง QR) หรือ อัปโหลดรูปภาพ → จัดตำแหน่งบนหน้ากระดาษ '
         '→ Export PDF (1 แถว = 1 หน้า)</p>',
         unsafe_allow_html=True,
     )
@@ -675,67 +657,45 @@ def main():
 
     data_source = st.radio(
         "📌 เลือกแหล่งข้อมูล", 
-        ["📂 ดึงรูปภาพจากโฟลเดอร์ (PNG/JPG)", "📊 นำเข้าไฟล์ Excel (สร้าง QR Code)"], 
+        ["🖼️ อัปโหลดรูปภาพหลายไฟล์ (PNG/JPG)", "📊 นำเข้าไฟล์ Excel (สร้าง QR Code)"], 
         horizontal=True
     )
 
-    if data_source == "📂 ดึงรูปภาพจากโฟลเดอร์ (PNG/JPG)":
+    if data_source == "🖼️ อัปโหลดรูปภาพหลายไฟล์ (PNG/JPG)":
         
-        # --- เพิ่มระบบปุ่มเลือกโฟลเดอร์ด้วย Tkinter ---
-        import tkinter as tk
-        from tkinter import filedialog
+        # ใช้ file_uploader แบบ accept_multiple_files=True
+        uploaded_images = st.file_uploader(
+            "อัปโหลดไฟล์รูปภาพ (สามารถคลุมดำหลายๆ ไฟล์แล้วลากมาวางได้เลย)", 
+            type=["png", "jpg", "jpeg"], 
+            accept_multiple_files=True
+        )
         
-        # เก็บค่า Path ไว้ใน session_state เพื่อไม่ให้หายตอนแอปรีเฟรช
-        if "folder_path" not in st.session_state:
-            st.session_state.folder_path = ""
+        if not uploaded_images:
+            st.info("👆 กรุณาอัปโหลดไฟล์รูปภาพเพื่อเริ่มต้น")
+            st.stop()
             
-        c_path1, c_path2 = st.columns([4, 1])
+        # สร้างโฟลเดอร์ชั่วคราวบน Server
+        temp_dir = tempfile.mkdtemp()
+        image_paths = []
+        image_names = []
         
-        with c_path2:
-            st.markdown("<div style='margin-top: 27px;'></div>", unsafe_allow_html=True) # ดันปุ่มให้ตรงกับกล่องข้อความ
-            if st.button("📁 เลือกจากเครื่อง...", use_container_width=True):
-                # สร้างหน้าต่างเลือกโฟลเดอร์
-                root = tk.Tk()
-                root.withdraw() # ซ่อนหน้าต่างหลักของ Tkinter
-                root.wm_attributes('-topmost', 1) # บังคับให้อยู่หน้าสุดของจอ
-                folder_selected = filedialog.askdirectory(master=root, title="เลือกโฟลเดอร์รูปภาพ")
-                root.destroy()
+        for img_file in uploaded_images:
+            temp_path = os.path.join(temp_dir, img_file.name)
+            with open(temp_path, "wb") as f:
+                f.write(img_file.getbuffer())
                 
-                # ถ้าผู้ใช้กดเลือกโฟลเดอร์ (ไม่ได้กด Cancel)
-                if folder_selected:
-                    # ปรับเป็น Path ของระบบที่ใช้อยู่
-                    st.session_state.folder_path = os.path.normpath(folder_selected)
-                    st.rerun() # รีเฟรชหน้าเว็บ 1 รอบเพื่ออัปเดตข้อมูลลงช่อง Text
-                    
-        with c_path1:
-            folder_path = st.text_input(
-                "📁 Path โฟลเดอร์รูปภาพ", 
-                value=st.session_state.folder_path,
-                help="พิมพ์ Path เอง หรือกดปุ่มด้านขวาเพื่อเปิดหน้าต่างเลือก"
-            )
-            # อัปเดตค่ากลับเข้าไปกรณีผู้ใช้พิมพ์แก้ไขเองด้วยมือ
-            st.session_state.folder_path = folder_path
-        # ---------------------------------------------
-        
-        if not folder_path or not os.path.exists(folder_path):
-            st.info("👆 กรุณาระบุ Path โฟลเดอร์ หรือกดปุ่ม 'เลือกจากเครื่อง...'")
-            st.stop()
-            
-        image_files = []
-        for ext in ('*.png', '*.jpg', '*.jpeg', '*.PNG', '*.JPG', '*.JPEG'):
-            image_files.extend(glob.glob(os.path.join(folder_path, ext)))
-            
-        if not image_files:
-            st.warning("⚠️ ไม่พบไฟล์รูปภาพ (.png, .jpg) ในโฟลเดอร์นี้")
-            st.stop()
+            image_paths.append(temp_path)
+            image_names.append(img_file.name)
             
         df = pd.DataFrame({
-            "Image_Path": image_files,
-            "File_Name": [os.path.basename(f) for f in image_files]
+            "Image_Path": image_paths,
+            "File_Name": image_names
         })
-        st.success(f"✅ พบรูปภาพทั้งหมด **{len(df):,}** ไฟล์")
-        with st.expander("👀 ดูรายชื่อไฟล์", expanded=False):
-            st.dataframe(df, height=300)
+        
+        st.success(f"✅ อัปโหลดรูปภาพสำเร็จ **{len(df):,}** ไฟล์")
+        with st.expander("👀 ดูรายชื่อไฟล์ที่อัปโหลด", expanded=False):
+            # df.astype(str) เพื่อกัน Error ตอนแสดงผลตาราง
+            st.dataframe(df.astype(str), height=300)
 
     else:
         uploaded_file = st.file_uploader("เลือกไฟล์ Excel (.xlsx, .xls)", type=["xlsx", "xls"])
@@ -780,7 +740,7 @@ def main():
 
         st.success(f"✅ โหลดสำเร็จ — **{len(df):,}** แถว, **{len(df.columns)}** คอลัมน์  (Sheet: {selected_sheet})")
         with st.expander("👀 ดูข้อมูลทั้งหมด", expanded=False):
-            st.dataframe(df, height=300)
+            st.dataframe(df.astype(str), height=300)
 
     # ─── STEP 2 : SELECT COLUMNS & RANGE ───
     st.markdown(
@@ -790,7 +750,6 @@ def main():
 
     col_options = df.columns.tolist()
     
-    # ถ้าเลือกโฟลเดอร์รูปภาพ แนะนำให้ดึงคอลัมน์ Image_Path เป็นค่าเริ่มต้น
     default_selection = ["Image_Path"] if "Image_Path" in col_options else ([col_options[0]] if col_options else [])
     
     selected_cols = st.multiselect(
@@ -1112,7 +1071,6 @@ def main():
             mime="application/pdf",
             use_container_width=True,
         )
-
 
 if __name__ == "__main__":
     main()
