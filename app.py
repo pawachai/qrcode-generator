@@ -19,6 +19,10 @@ import tempfile
 import os
 import math
 import numpy as np
+import glob
+import subprocess
+import platform
+import sys
 
 # ──────────────────────────────────────────────
 # Page sizes
@@ -40,23 +44,33 @@ COLORS = [
     "#d35400", "#16a085", "#c0392b", "#2980b9",
 ]
 
-
-import glob
+# ──────────────────────────────────────────────
+# Helper function สำหรับเปิดหน้าต่างเลือกโฟลเดอร์ (ข้ามข้อจำกัด Threading)
+# ──────────────────────────────────────────────
+def open_folder_picker():
+    """เปิด Dialog เลือกโฟลเดอร์ โดยใช้ Subprocess เพื่อเลี่ยง Main Thread Crash"""
+    try:
+        if platform.system() == "Darwin":  # สำหรับ macOS (Macbook)
+            cmd = ['osascript', '-e', 'POSIX path of (choose folder with prompt "เลือกโฟลเดอร์รูปภาพ")']
+            result = subprocess.check_output(cmd, text=True).strip()
+            return result
+        else:  # สำหรับ Windows / Linux
+            script = "import tkinter as tk, tkinter.filedialog as fd; root=tk.Tk(); root.withdraw(); root.attributes('-topmost', True); print(fd.askdirectory())"
+            cmd = [sys.executable, "-c", script]
+            result = subprocess.check_output(cmd, text=True).strip()
+            return result
+    except subprocess.CalledProcessError:
+        return "" # ผู้ใช้กด Cancel
 
 
 def find_thai_font() -> str | None:
-    """Find a Thai-capable TTF/OTF font file on the current system."""
-    # 0. Bundled font (always ship with the app)
     bundled = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts", "Sarabun-Regular.ttf")
     if os.path.exists(bundled):
         return bundled
 
-    # 1. Check known exact paths first (fast)
     candidates = [
-        # macOS
         "/System/Library/Fonts/Supplemental/Ayuthaya.ttf",
         "/System/Library/Fonts/Supplemental/Sathu.ttf",
-        # Linux / Docker (fonts-thai-tlwg)
         "/usr/share/fonts/truetype/thai-tlwg/TlwgTypo.ttf",
         "/usr/share/fonts/truetype/thai-tlwg/Loma.ttf",
         "/usr/share/fonts/truetype/thai-tlwg/Garuda.ttf",
@@ -66,17 +80,14 @@ def find_thai_font() -> str | None:
         "/usr/share/fonts/truetype/tlwg/Garuda.ttf",
         "/usr/share/fonts/truetype/tlwg/Garuda-Bold.ttf",
         "/usr/share/fonts/truetype/tlwg/Sarabun.ttf",
-        # Linux / Docker (fonts-noto)
         "/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf",
         "/usr/share/fonts/opentype/noto/NotoSansThai-Regular.otf",
-        # Windows fallback
         "C:/Windows/Fonts/tahoma.ttf",
     ]
     for path in candidates:
         if os.path.exists(path):
             return path
 
-    # 2. Search system fonts for any Thai-capable font (Garuda, Loma, Sarabun, etc.)
     search_patterns = [
         "/usr/share/fonts/**/Garuda*.ttf",
         "/usr/share/fonts/**/Loma*.ttf",
@@ -95,22 +106,19 @@ def find_thai_font() -> str | None:
     return None
 
 
-# ── Register Thai font with ReportLab once at module level ──
 _THAI_FONT_PATH = find_thai_font()
-_THAI_FONT_NAME = "Helvetica"  # fallback to built-in
+_THAI_FONT_NAME = "Helvetica"
 if _THAI_FONT_PATH:
     try:
         pdfmetrics.registerFont(TTFont("ThaiFont", _THAI_FONT_PATH))
         _THAI_FONT_NAME = "ThaiFont"
     except Exception:
         pass
-    # Also register with matplotlib so preview works
     try:
         fontManager.addfont(_THAI_FONT_PATH)
     except Exception:
         pass
 
-# FontProperties for matplotlib (None = use default)
 _THAI_FONT_PROPS: FontProperties | None = (
     FontProperties(fname=_THAI_FONT_PATH) if _THAI_FONT_PATH else None
 )
@@ -119,10 +127,7 @@ _THAI_FONT_PROPS: FontProperties | None = (
 def render_thai_text_image(text: str, font_path: str, font_size_pt: float,
                           width_mm: float, align: str = "center",
                           color_hex: str = "#555555") -> tuple:
-    """Render wrapped text block with PIL → (np_array, w_mm, h_mm).
-    Returns (None, 0, 0) on failure.
-    """
-    render_scale = 8  # px per pt for sharp rendering
+    render_scale = 8
     pixel_size = max(12, int(font_size_pt * render_scale))
     mm_per_px = (font_size_pt * 0.353) / pixel_size
     target_w_px = max(20, int(width_mm / mm_per_px))
@@ -132,12 +137,10 @@ def render_thai_text_image(text: str, font_path: str, font_size_pt: float,
     except Exception:
         return None, 0, 0
 
-    # --- Word wrap using actual pixel measurement ---
     def measure_px(s):
         bb = font.getbbox(s)
         return bb[2] - bb[0] if bb else 0
 
-    # Split into words (spaces) then wrap; for no-space text, wrap by char
     if " " in text:
         tokens = text.split(" ")
         lines, cur = [], ""
@@ -166,7 +169,6 @@ def render_thai_text_image(text: str, font_path: str, font_size_pt: float,
     if not lines:
         lines = [text]
 
-    # --- Render all lines onto one image ---
     line_spacing = int(pixel_size * 1.5)
     canvas_w = target_w_px + 16
     canvas_h = line_spacing * len(lines) + pixel_size
@@ -191,7 +193,6 @@ def render_thai_text_image(text: str, font_path: str, font_size_pt: float,
             lx = (canvas_w - lw) // 2
         draw.text((lx, ly), line, font=font, fill=fill)
 
-    # Crop to tight content
     bbox = img.getbbox()
     if bbox:
         img = img.crop((0, 0, canvas_w, bbox[3] + 4))
@@ -204,11 +205,7 @@ def render_thai_text_image(text: str, font_path: str, font_size_pt: float,
 def render_thai_text_pil(text: str, font_path: str, font_size_pt: float,
                          width_mm: float, align: str = "center",
                          color_hex: str = "#000000") -> tuple:
-    """Render wrapped Thai text as a PIL Image for PDF embedding.
-    Returns (pil_image, w_mm, h_mm). Returns (None, 0, 0) on failure.
-    Uses high-res rendering so Thai vowels/tone marks are properly composed.
-    """
-    render_scale = 12  # high quality for PDF
+    render_scale = 12
     pixel_size = max(16, int(font_size_pt * render_scale))
     mm_per_px = (font_size_pt * 0.353) / pixel_size
     target_w_px = max(20, int(width_mm / mm_per_px))
@@ -222,7 +219,6 @@ def render_thai_text_pil(text: str, font_path: str, font_size_pt: float,
         bb = font.getbbox(s)
         return bb[2] - bb[0] if bb else 0
 
-    # Word wrap
     if " " in text:
         tokens = text.split(" ")
         lines, cur = [], ""
@@ -275,12 +271,10 @@ def render_thai_text_pil(text: str, font_path: str, font_size_pt: float,
             lx = (canvas_w - lw) // 2
         draw.text((lx, ly), line, font=font, fill=fill)
 
-    # Crop to tight content
     bbox = img.getbbox()
     if bbox:
         img = img.crop((0, 0, canvas_w, bbox[3] + 4))
 
-    # Convert RGBA → RGB with white background (reliable for PDF embedding)
     bg = Image.new("RGB", img.size, (255, 255, 255))
     bg.paste(img, mask=img.split()[3])
 
@@ -290,19 +284,15 @@ def render_thai_text_pil(text: str, font_path: str, font_size_pt: float,
 
 
 def wrap_text_for_preview(text: str, font_size_pt: float, width_mm: float) -> list:
-    """Wrap text to fit within width_mm for matplotlib preview."""
-    # Estimate: avg char width ≈ 0.55 × font_size_pt × 0.353 mm
     char_w_mm = max(0.5, font_size_pt * 0.353 * 0.55)
     chars_per_line = max(3, int(width_mm / char_w_mm))
     if " " in text:
         return textwrap.wrap(text, width=chars_per_line) or [text]
     else:
-        # No spaces (Thai dense text) — character-level split
         return [text[i:i + chars_per_line] for i in range(0, len(text), chars_per_line)] or [text]
 
 
 def wrap_text_for_pdf(text: str, font_name: str, font_size: float, max_width_pt: float) -> list:
-    """Wrap text to fit within max_width_pt using ReportLab string measurement."""
     def measure(s):
         try:
             return stringWidth(s, font_name, font_size)
@@ -324,7 +314,6 @@ def wrap_text_for_pdf(text: str, font_name: str, font_size: float, max_width_pt:
             lines.append(current)
         return lines or [text]
     else:
-        # Character-level wrap for Thai/no-space text
         lines, current = [], ""
         for char in text:
             candidate = current + char
@@ -340,7 +329,6 @@ def wrap_text_for_pdf(text: str, font_name: str, font_size: float, max_width_pt:
 
 
 def smart_str(val) -> str:
-    """Convert value to string, removing .0 from whole numbers."""
     if pd.isna(val):
         return ""
     if isinstance(val, float) and val == int(val):
@@ -349,7 +337,6 @@ def smart_str(val) -> str:
 
 
 def generate_qr_image(data: str, size_px: int = 300) -> Image.Image:
-    """Generate a QR code as a PIL Image."""
     qr = qrcode.QRCode(
         version=None,
         error_correction=qrcode.constants.ERROR_CORRECT_M,
@@ -368,12 +355,10 @@ def create_page_preview(
     qr_configs,
     total_pages,
 ):
-    """Create a matplotlib preview showing 1 page with QR codes positioned."""
     fig_h = 8
     fig_w = fig_h * page_w_mm / page_h_mm
     fig, ax = plt.subplots(1, 1, figsize=(max(4, fig_w), fig_h), dpi=100)
 
-    # Draw stacked pages behind (shadow effect)
     stack_count = min(total_pages - 1, 4)
     for i in range(stack_count, 0, -1):
         offset = i * 1.8
@@ -385,7 +370,6 @@ def create_page_preview(
         )
         ax.add_patch(shadow)
 
-    # Front page
     page_rect = patches.FancyBboxPatch(
         (0, 0), page_w_mm, page_h_mm,
         boxstyle="round,pad=0",
@@ -393,7 +377,6 @@ def create_page_preview(
     )
     ax.add_patch(page_rect)
 
-    # Draw each QR code
     for cfg in qr_configs:
         x = cfg["x_mm"]
         y = cfg["y_mm"]
@@ -401,8 +384,8 @@ def create_page_preview(
         color = cfg["color"]
         col_name = cfg["col_name"]
         value = smart_str(cfg["value"])
+        label_value = smart_str(cfg.get("label_value", value))
 
-        # QR code border — thicker if active/selected
         is_active = cfg.get("is_active", False)
         border_w = 3.5 if is_active else 1.5
         qr_rect = patches.FancyBboxPatch(
@@ -412,20 +395,24 @@ def create_page_preview(
         )
         ax.add_patch(qr_rect)
 
-        # Draw actual QR image — fill the entire box
         try:
-            qr_img = generate_qr_image(value, size_px=200)
-            qr_arr = np.array(qr_img)
+            if isinstance(value, str) and os.path.isfile(value) and value.lower().endswith(('.png', '.jpg', '.jpeg')):
+                img = Image.open(value).convert("RGB")
+                img = img.resize((200, 200), Image.NEAREST)
+                qr_arr = np.array(img)
+            else:
+                qr_img = generate_qr_image(value, size_px=200)
+                qr_arr = np.array(qr_img)
+                
             ax.imshow(
                 qr_arr,
                 extent=[x + 0.5, x + size - 0.5, y + size - 0.5, y + 0.5],
                 aspect="auto", zorder=5, interpolation="nearest",
             )
         except Exception:
-            ax.text(x + size / 2, y + size / 2, "QR", ha="center", va="center",
+            ax.text(x + size / 2, y + size / 2, "IMG/QR", ha="center", va="center",
                     fontsize=max(6, size * 0.3), color="#333", weight="bold")
 
-        # Column name badge
         badge_text = str(col_name)
         badge_w = max(10, len(badge_text) * 2.2 + 4)
         badge_h = 3.5
@@ -443,7 +430,6 @@ def create_page_preview(
         ax.text(badge_x + badge_w / 2, badge_y + badge_h / 2, badge_text,
                 ha="center", va="center", fontsize=5.5, color="white", weight="bold", zorder=7)
 
-        # Value text below QR
         if cfg.get("show_label", True):
             label_y_pos = y + size + 2
             if badge_y > y:
@@ -455,14 +441,12 @@ def create_page_preview(
             label_x_left = label_x_center - label_width_mm / 2
             align_label = cfg.get("label_align", "กลาง")
 
-            # Render entire text block with PIL (proper Thai shaping)
             rendered = False
             if _THAI_FONT_PATH:
                 arr, tw, th = render_thai_text_image(
-                    value, _THAI_FONT_PATH, label_font_size,
+                    label_value, _THAI_FONT_PATH, label_font_size, 
                     label_width_mm, align_label, "#555555")
                 if arr is not None and tw > 0 and th > 0:
-                    # Position based on alignment
                     if align_label == "ซ้าย":
                         x0 = label_x_left
                     elif align_label == "ขวา":
@@ -470,7 +454,6 @@ def create_page_preview(
                     else:
                         x0 = label_x_center - tw / 2
 
-                    # Draw dashed bounding box
                     rgb = mc.to_rgb(color)
                     box_h = max(th, 3)
                     ax.add_patch(patches.Rectangle(
@@ -484,8 +467,7 @@ def create_page_preview(
                     rendered = True
 
             if not rendered:
-                # Fallback: matplotlib text (no Thai shaping)
-                lines = wrap_text_for_preview(value, label_font_size, label_width_mm)
+                lines = wrap_text_for_preview(label_value, label_font_size, label_width_mm)
                 line_height_mm = label_font_size * 0.353 * 2.5
                 total_h = len(lines) * line_height_mm + line_height_mm * 0.5
                 rgb = mc.to_rgb(color)
@@ -523,7 +505,6 @@ def generate_pdf(
     orientation,
     progress_callback=None,
 ):
-    """Generate PDF: 1 page per row, each page has QR codes for each column."""
     if orientation == "Landscape":
         page_size = landscape(page_size)
 
@@ -541,32 +522,40 @@ def generate_pdf(
             raw = df_selected[col_name].iloc[row_idx]
             if pd.isna(raw):
                 continue
+            
             value = smart_str(raw)
-
-            qr_img = generate_qr_image(value, size_px=max(200, int(cfg["size_mm"] * 10)))
-
-            tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-            qr_img.save(tmp, format="PNG")
-            tmp.close()
-
             x_pt = cfg["x_mm"] * mm
             y_pt = page_h - cfg["y_mm"] * mm - cfg["size_mm"] * mm
 
-            c.drawImage(tmp.name, x_pt, y_pt, cfg["size_mm"] * mm, cfg["size_mm"] * mm)
-            os.unlink(tmp.name)
+            if isinstance(value, str) and os.path.isfile(value) and value.lower().endswith(('.png', '.jpg', '.jpeg')):
+                c.drawImage(value, x_pt, y_pt, width=cfg["size_mm"] * mm, height=cfg["size_mm"] * mm)
+            else:
+                qr_img = generate_qr_image(value, size_px=max(200, int(cfg["size_mm"] * 10)))
+                tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+                qr_img.save(tmp, format="PNG")
+                tmp.close()
+                c.drawImage(tmp.name, x_pt, y_pt, width=cfg["size_mm"] * mm, height=cfg["size_mm"] * mm)
+                os.unlink(tmp.name)
 
             if cfg.get("show_label", True):
+                label_col = cfg.get("label_col", col_name)
+                label_offset = cfg.get("label_row_offset", 0)
+                target_row_idx = row_idx + label_offset
+                if label_col in df_selected.columns and 0 <= target_row_idx < len(df_selected):
+                    raw_label = df_selected[label_col].iloc[target_row_idx]
+                else:
+                    raw_label = "" 
+                label_value = smart_str(raw_label)
                 font_size = cfg.get("label_font_size", 7)
                 x_offset_pt = cfg.get("label_x_offset", 0) * mm
                 label_width_mm = max(5.0, float(cfg.get("label_width_mm", cfg["size_mm"])))
                 label_x_center = x_pt + (cfg["size_mm"] * mm) / 2 + x_offset_pt
                 align_label = cfg.get("label_align", "กลาง")
 
-                # Render Thai text as image via PIL (proper vowel/tone composition)
                 rendered_pdf = False
                 if _THAI_FONT_PATH:
                     text_img, tw_mm, th_mm = render_thai_text_pil(
-                        value, _THAI_FONT_PATH, font_size,
+                        label_value, _THAI_FONT_PATH, font_size,
                         label_width_mm, align_label, "#000000")
                     if text_img is not None and tw_mm > 0:
                         tw_pt = tw_mm * mm
@@ -580,7 +569,7 @@ def generate_pdf(
                         else:
                             img_x = label_x_center - tw_pt / 2
 
-                        img_y = y_pt - th_pt - 2  # below QR
+                        img_y = y_pt - th_pt - 2  
 
                         tmp_txt = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
                         text_img.save(tmp_txt, format="PNG")
@@ -589,12 +578,11 @@ def generate_pdf(
                         os.unlink(tmp_txt.name)
                         rendered_pdf = True
 
-                # Fallback: ReportLab text (non-Thai or if PIL render failed)
                 if not rendered_pdf:
                     label_width_pt = label_width_mm * mm
                     label_x_left = label_x_center - label_width_pt / 2
                     c.setFont(_THAI_FONT_NAME, font_size)
-                    lines = wrap_text_for_pdf(value, _THAI_FONT_NAME, font_size, label_width_pt)
+                    lines = wrap_text_for_pdf(label_value, _THAI_FONT_NAME, font_size, label_width_pt)
                     line_spacing = font_size * 1.4
                     label_y = y_pt - font_size - 2
                     for line in lines:
@@ -619,7 +607,7 @@ def generate_pdf(
 # ══════════════════════════════════════════════
 def main():
     st.set_page_config(
-        page_title="QR Code Generator",
+        page_title="QR Code & Image Generator",
         page_icon="🔲",
         layout="wide",
         initial_sidebar_state="expanded",
@@ -628,14 +616,12 @@ def main():
     st.markdown(
         """
         <style>
-        /* ── Force light / white theme ── */
         .stApp { background-color: #ffffff !important; color: #333333 !important; }
         header[data-testid="stHeader"] { background-color: #ffffff !important; }
         section[data-testid="stSidebar"] { background-color: #f7f7f7 !important; color: #333 !important; }
         section[data-testid="stSidebar"] * { color: #333 !important; }
         .stMarkdown, .stText, p, span, label, div { color: #333333 !important; }
 
-        /* Hide Deploy button & Streamlit menu */
         .stDeployButton, #MainMenu, footer, header .stActionButton { display: none !important; }
 
         .main-title { font-size: 2.2rem; font-weight: 700; color: #1a1a1a !important; margin-bottom: 0; }
@@ -649,29 +635,26 @@ def main():
         .col-badge  { display: inline-block; padding: 4px 12px; border-radius: 20px;
                       color: white !important; font-weight: 600; font-size: 0.9rem; margin: 2px; }
 
-        /* Inputs & widgets */
         .stSlider label, .stCheckbox label, .stSelectbox label,
         .stMultiSelect label, .stNumberInput label, .stTextInput label,
         .stFileUploader label { color: #333 !important; }
         .stMetric label { color: #666 !important; }
         .stMetric [data-testid="stMetricValue"] { color: #1a1a1a !important; }
 
-        /* Expander */
         .streamlit-expanderHeader { color: #333 !important; }
         </style>
         """,
         unsafe_allow_html=True,
     )
 
-    st.markdown('<p class="main-title">🔲 QR Code Generator from Excel</p>', unsafe_allow_html=True)
+    st.markdown('<p class="main-title">🔲 QR Code & Image PDF Generator</p>', unsafe_allow_html=True)
     st.markdown(
-        '<p class="sub-title">นำเข้า Excel → เลือกคอลัมน์ → จัดตำแหน่ง QR อิสระบนหน้ากระดาษ '
+        '<p class="sub-title">นำเข้าข้อมูลจาก Excel (สร้าง QR) หรือ ดึงรูปภาพจากโฟลเดอร์ → จัดตำแหน่งบนหน้ากระดาษ '
         '→ Export PDF (1 แถว = 1 หน้า)</p>',
         unsafe_allow_html=True,
     )
     st.divider()
 
-    # ─── SIDEBAR : PAGE SETTINGS ───
     with st.sidebar:
         st.header("📄 ตั้งค่าหน้ากระดาษ")
 
@@ -698,68 +681,111 @@ def main():
             page_w_mm, page_h_mm = page_h_mm, page_w_mm
 
         st.divider()
-        st.header("🔲 ค่าเริ่มต้น QR Code")
-        default_qr_size = st.number_input("ขนาดเริ่มต้น QR (mm)", min_value=3, max_value=500, value=30, step=1)
-        default_show_label = st.checkbox("แสดงข้อความใต้ QR", value=False)
+        st.header("🔲 ค่าเริ่มต้น QR / ภาพ")
+        default_qr_size = st.number_input("ขนาดเริ่มต้น (mm)", min_value=3, max_value=500, value=30, step=1)
+        default_show_label = st.checkbox("แสดงข้อความใต้ QR/ภาพ", value=False)
         default_label_size = st.number_input("ขนาดตัวอักษร (pt)", min_value=2, max_value=72, value=7, step=1)
 
-    # ─── STEP 1 : IMPORT EXCEL ───
-    st.markdown('<div class="step-header">📥 Step 1 — นำเข้าไฟล์ Excel</div>', unsafe_allow_html=True)
+    # ─── STEP 1 : IMPORT DATA ───
+    st.markdown('<div class="step-header">📥 Step 1 — นำเข้าข้อมูล</div>', unsafe_allow_html=True)
 
-    uploaded_file = st.file_uploader(
-        "เลือกไฟล์ Excel (.xlsx, .xls)",
-        type=["xlsx", "xls"],
+    data_source = st.radio(
+        "📌 เลือกแหล่งข้อมูล", 
+        ["📂 ดึงรูปภาพจากโฟลเดอร์ (PNG/JPG)", "📊 นำเข้าไฟล์ Excel (สร้าง QR Code)"], 
+        horizontal=True
     )
 
-    if uploaded_file is None:
-        st.info("👆 กรุณาอัปโหลดไฟล์ Excel เพื่อเริ่มต้น")
-        st.stop()
+    if data_source == "📂 ดึงรูปภาพจากโฟลเดอร์ (PNG/JPG)":
+        
+        if "folder_path" not in st.session_state:
+            st.session_state.folder_path = ""
+            
+        c_path1, c_path2 = st.columns([4, 1])
+        
+        with c_path2:
+            st.markdown("<div style='margin-top: 27px;'></div>", unsafe_allow_html=True)
+            if st.button("📁 เลือกจากเครื่อง...", use_container_width=True):
+                # ใช้ฟังก์ชันที่แยกไปรันภายนอกแล้ว จะไม่เกิด Error เรื่อง Thread ครับ
+                folder_selected = open_folder_picker()
+                if folder_selected:
+                    st.session_state.folder_path = os.path.normpath(folder_selected)
+                    st.rerun()
+                    
+        with c_path1:
+            folder_path = st.text_input(
+                "📁 Path โฟลเดอร์รูปภาพ", 
+                value=st.session_state.folder_path,
+                help="พิมพ์ Path เอง หรือกดปุ่มด้านขวาเพื่อเปิดหน้าต่างเลือก"
+            )
+            st.session_state.folder_path = folder_path
+        
+        if not folder_path or not os.path.exists(folder_path):
+            st.info("👆 กรุณาระบุ Path โฟลเดอร์ หรือกดปุ่ม 'เลือกจากเครื่อง...'")
+            st.stop()
+            
+        image_files = []
+        for ext in ('*.png', '*.jpg', '*.jpeg', '*.PNG', '*.JPG', '*.JPEG'):
+            image_files.extend(glob.glob(os.path.join(folder_path, ext)))
+            
+        if not image_files:
+            st.warning("⚠️ ไม่พบไฟล์รูปภาพ (.png, .jpg) ในโฟลเดอร์นี้")
+            st.stop()
+            
+        df = pd.DataFrame({
+            "Image_Path": image_files,
+            "File_Name": [os.path.basename(f) for f in image_files]
+        })
+        
+        st.success(f"✅ พบรูปภาพทั้งหมด **{len(df):,}** ไฟล์")
+        with st.expander("👀 ดูรายชื่อไฟล์", expanded=False):
+            # แปลงเป็น String กัน Error Pyarrow
+            st.dataframe(df.astype(str), height=300)
 
-    xls = pd.ExcelFile(uploaded_file)
-    sheet_names = xls.sheet_names
-
-    if len(sheet_names) > 1:
-        selected_sheet = st.selectbox("เลือก Sheet", sheet_names)
     else:
-        selected_sheet = sheet_names[0]
+        uploaded_file = st.file_uploader("เลือกไฟล์ Excel (.xlsx, .xls)", type=["xlsx", "xls"])
 
-    has_header = st.checkbox(
-        "แถวแรกเป็นหัวข้อคอลัมน์ (Header)",
-        value=False,
-        help="ถ้า Excel ไม่มีหัวข้อคอลัมน์ ให้ปิดตัวเลือกนี้ → แถวแรกจะเป็นข้อมูล",
-    )
+        if uploaded_file is None:
+            st.info("👆 กรุณาอัปโหลดไฟล์ Excel เพื่อเริ่มต้น")
+            st.stop()
 
-    if has_header:
-        df = pd.read_excel(uploaded_file, sheet_name=selected_sheet)
-    else:
-        df = pd.read_excel(uploaded_file, sheet_name=selected_sheet, header=None)
-        # Auto-generate column names: A, B, C, ...
-        alpha_names = []
-        for idx in range(len(df.columns)):
-            name = ""
-            n = idx
-            while True:
-                name = chr(ord('A') + n % 26) + name
-                n = n // 26 - 1
-                if n < 0:
-                    break
-            alpha_names.append(name)
-        df.columns = alpha_names
+        xls = pd.ExcelFile(uploaded_file)
+        sheet_names = xls.sheet_names
 
-    # Ensure all column names are strings
-    df.columns = [str(c) for c in df.columns]
+        if len(sheet_names) > 1:
+            selected_sheet = st.selectbox("เลือก Sheet", sheet_names)
+        else:
+            selected_sheet = sheet_names[0]
 
-    # Clean float columns: 1.0 → 1 if all values are whole numbers
-    for col in df.columns:
-        if df[col].dtype == "float64":
-            non_null = df[col].dropna()
-            if len(non_null) > 0 and (non_null == non_null.astype(int)).all():
-                df[col] = df[col].astype("Int64")  # nullable int
+        has_header = st.checkbox("แถวแรกเป็นหัวข้อคอลัมน์ (Header)", value=False)
 
-    st.success(f"✅ โหลดสำเร็จ — **{len(df):,}** แถว, **{len(df.columns)}** คอลัมน์  (Sheet: {selected_sheet})")
+        if has_header:
+            df = pd.read_excel(uploaded_file, sheet_name=selected_sheet)
+        else:
+            df = pd.read_excel(uploaded_file, sheet_name=selected_sheet, header=None)
+            alpha_names = []
+            for idx in range(len(df.columns)):
+                name = ""
+                n = idx
+                while True:
+                    name = chr(ord('A') + n % 26) + name
+                    n = n // 26 - 1
+                    if n < 0:
+                        break
+                alpha_names.append(name)
+            df.columns = alpha_names
 
-    with st.expander("👀 ดูข้อมูลทั้งหมด", expanded=False):
-        st.dataframe(df, height=300)
+        df.columns = [str(c) for c in df.columns]
+
+        for col in df.columns:
+            if df[col].dtype == "float64":
+                non_null = df[col].dropna()
+                if len(non_null) > 0 and (non_null == non_null.astype(int)).all():
+                    df[col] = df[col].astype("Int64")  
+
+        st.success(f"✅ โหลดสำเร็จ — **{len(df):,}** แถว, **{len(df.columns)}** คอลัมน์  (Sheet: {selected_sheet})")
+        with st.expander("👀 ดูข้อมูลทั้งหมด", expanded=False):
+            # แปลงเป็น String กัน Error Pyarrow
+            st.dataframe(df.astype(str), height=300)
 
     # ─── STEP 2 : SELECT COLUMNS & RANGE ───
     st.markdown(
@@ -768,25 +794,26 @@ def main():
     )
 
     col_options = df.columns.tolist()
+    
+    default_selection = ["Image_Path"] if "Image_Path" in col_options else ([col_options[0]] if col_options else [])
+    
     selected_cols = st.multiselect(
-        "เลือกคอลัมน์ที่ต้องการสร้าง QR Code (เลือกได้หลายคอลัมน์)",
+        "เลือกคอลัมน์ที่ต้องการสร้าง QR Code หรือแสดงรูปภาพ (เลือกได้หลายคอลัมน์)",
         col_options,
-        default=[col_options[0]] if col_options else [],
-        help="แต่ละคอลัมน์ = QR 1 ตัวบนแต่ละหน้า สามารถเลื่อนตำแหน่งแยกกันได้อิสระ",
+        default=default_selection,
+        help="แต่ละคอลัมน์ = ข้อมูล 1 ตัวบนแต่ละหน้า สามารถเลื่อนตำแหน่งแยกกันได้อิสระ",
     )
 
     if not selected_cols:
         st.warning("⚠️ กรุณาเลือกอย่างน้อย 1 คอลัมน์")
         st.stop()
 
-    # Colored badges
     badges_html = ""
     for i, col in enumerate(selected_cols):
         color = COLORS[i % len(COLORS)]
         badges_html += f'<span class="col-badge" style="background:{color};">{str(col)}</span> '
     st.markdown(f"คอลัมน์ที่เลือก: {badges_html}", unsafe_allow_html=True)
 
-    # Row range
     total_data_rows = len(df)
     rcol1, rcol2 = st.columns(2)
     with rcol1:
@@ -798,7 +825,7 @@ def main():
         st.error("❌ แถวเริ่มต้นต้องน้อยกว่าหรือเท่ากับแถวสิ้นสุด")
         st.stop()
 
-    df_selected = df.iloc[start_row - 1: end_row][selected_cols].dropna(how="all").reset_index(drop=True)
+    df_selected = df.iloc[start_row - 1: end_row].dropna(how="all", subset=selected_cols).reset_index(drop=True)
     total_rows = len(df_selected)
 
     if total_rows == 0:
@@ -810,26 +837,24 @@ def main():
         <div class="info-box">
             📊 <b>สรุป:</b> เลือก <b>{len(selected_cols)}</b> คอลัมน์ ×
             <b>{total_rows:,}</b> แถว → PDF <b>{total_rows:,} หน้า</b>
-            (แต่ละหน้ามี QR {len(selected_cols)} ตัว)
+            (แต่ละหน้ามีข้อมูล {len(selected_cols)} จุด)
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    # ─── STEP 3 : POSITION EACH QR ───
+    # ─── STEP 3 : POSITION EACH QR/IMAGE ───
     st.markdown(
-        '<div class="step-header">📐 Step 3 — จัดตำแหน่ง QR Code บนหน้ากระดาษ</div>',
+        '<div class="step-header">📐 Step 3 — จัดตำแหน่ง QR / ภาพ บนหน้ากระดาษ</div>',
         unsafe_allow_html=True,
     )
 
     max_x = int(page_w_mm)
     max_y = int(page_h_mm)
 
-    # ── Store all positions in a dict inside session_state ──
     if "qr_positions" not in st.session_state:
         st.session_state.qr_positions = {}
 
-    # Initialize defaults for any new columns
     for i, col_name in enumerate(selected_cols):
         cn = str(col_name)
         if cn not in st.session_state.qr_positions:
@@ -838,15 +863,15 @@ def main():
                 "y": max(0, min(10 + i * (default_qr_size + 20), max_y - default_qr_size)),
                 "size": default_qr_size,
                 "label": default_show_label,
+                "label_col": cn,
+                "label_row_offset": 0,
                 "label_x_offset": 0,
                 "label_font_size": default_label_size,
                 "label_width_mm": default_qr_size,
                 "label_align": "กลาง",
             }
 
-    # ── Callbacks ──
     def on_col_select():
-        """When user picks a different QR from dropdown, load its values into edit widgets."""
         cn = str(st.session_state._active_qr)
         pos = st.session_state.qr_positions.get(cn, {"x": 10, "y": 10, "size": default_qr_size, "label": True})
         st.session_state._edit_x = pos["x"]
@@ -860,32 +885,29 @@ def main():
         st.session_state._last_active_cn = cn
 
     def save_back():
-        """Save current edit widget values back to the active column's position."""
         cn = str(st.session_state._active_qr)
         st.session_state.qr_positions[cn] = {
             "x": st.session_state._edit_x,
             "y": st.session_state._edit_y,
             "size": st.session_state._edit_size,
             "label": st.session_state._edit_label,
+            "label_col": st.session_state.get("_edit_label_col", cn),
+            "label_row_offset": st.session_state.get("_edit_label_row_offset", 0),
             "label_x_offset": st.session_state.get("_edit_label_x_offset", 0),
             "label_font_size": st.session_state.get("_edit_label_font_size", default_label_size),
             "label_width_mm": st.session_state.get("_edit_label_width", default_qr_size),
             "label_align": st.session_state.get("_edit_label_align", "กลาง"),
         }
 
-    # ── Init edit widget defaults (first column) ──
     first_col = str(selected_cols[0])
     if "_active_qr" not in st.session_state:
         st.session_state._active_qr = first_col
-    # Make sure active is still valid
     if st.session_state._active_qr not in [str(c) for c in selected_cols]:
         st.session_state._active_qr = first_col
 
     active_cn = str(st.session_state._active_qr)
     pos = st.session_state.qr_positions.get(active_cn, {"x": 10, "y": 10, "size": default_qr_size, "label": True})
 
-    # Always ensure ALL edit keys exist with correct defaults
-    # (runs on first load and whenever active column changes)
     need_init = "_edit_x" not in st.session_state
     col_changed = st.session_state.get("_last_active_cn") != active_cn
     if need_init or col_changed:
@@ -893,6 +915,8 @@ def main():
         st.session_state._edit_y = pos["y"]
         st.session_state._edit_size = pos["size"]
         st.session_state._edit_label = pos["label"]
+        st.session_state._edit_label_col = pos.get("label_col", active_cn)
+        st.session_state._edit_label_row_offset = pos.get("label_row_offset", 0)
         st.session_state._edit_label_x_offset = pos.get("label_x_offset", 0)
         st.session_state._edit_label_font_size = pos.get("label_font_size", default_label_size)
         st.session_state._edit_label_width = pos.get("label_width_mm", default_qr_size)
@@ -902,11 +926,10 @@ def main():
     ctrl_col, preview_col = st.columns([1, 2])
 
     with ctrl_col:
-        # Dropdown to pick which QR to edit
         col_str_list = [str(c) for c in selected_cols]
         if len(selected_cols) > 1:
             st.selectbox(
-                "🔲 เลือก QR ที่ต้องการปรับตำแหน่ง",
+                "🔲 เลือกคอลัมน์ที่ต้องการปรับตำแหน่ง",
                 col_str_list,
                 format_func=lambda c: f"คอลัมน์: {c}",
                 key="_active_qr",
@@ -928,7 +951,6 @@ def main():
             unsafe_allow_html=True,
         )
 
-        # Edit widgets — fixed keys, save on change
         c1, c2 = st.columns(2)
         with c1:
             st.number_input("↔ X ซ้าย-ขวา (mm)", min_value=0, max_value=max_x,
@@ -939,47 +961,47 @@ def main():
 
         c3, c4 = st.columns(2)
         with c3:
-            st.number_input("ขนาด QR (mm)", min_value=3, max_value=500,
+            st.number_input("ขนาด QR/ภาพ (mm)", min_value=3, max_value=500,
                             step=1, key="_edit_size", on_change=save_back)
         with c4:
-            st.checkbox("แสดงข้อความใต้ QR", key="_edit_label", on_change=save_back)
+            st.checkbox("แสดงข้อความด้านล่าง", key="_edit_label", on_change=save_back)
 
         if st.session_state.get("_edit_label", False):
-            # ดึงค่าล่าสุดจาก dict ที่เราเซฟไว้มาเป็นหลัก
             p_now = st.session_state.qr_positions.get(active_cn, {})
             
-            # 🔴 ทริคแก้บั๊ก: บังคับยัดค่าลง session_state ทับลงไปเลยทุกครั้งก่อนวาด Widget
-            # เพื่อไม่ให้ Streamlit แอบไปดึงค่า min_value (-200) มาใส่เอง
+            st.session_state["_edit_label_col"] = p_now.get("label_col", active_cn)
+            st.session_state["_edit_label_row_offset"] = int(p_now.get("label_row_offset", 0))
             st.session_state["_edit_label_x_offset"] = int(p_now.get("label_x_offset", 0))
             st.session_state["_edit_label_font_size"] = int(p_now.get("label_font_size", default_label_size))
             st.session_state["_edit_label_width"] = int(p_now.get("label_width_mm", default_qr_size))
             st.session_state["_edit_label_align"] = p_now.get("label_align", "กลาง")
+            c_lbl1, c_lbl2 = st.columns(2)
+            with c_lbl1:
+                st.selectbox("📄 เลือกคอลัมน์ข้อความ", options=df.columns.tolist(), key="_edit_label_col", on_change=save_back)
+            with c_lbl2:
+                st.number_input("↕ เลื่อนแถวข้อมูล", min_value=-500, max_value=500, step=1, key="_edit_label_row_offset", on_change=save_back, help="1 = เลื่อนลง 1 แถว")
 
             c5, c6 = st.columns(2)
             with c5:
-                st.number_input("↔ ตำแหน่งซ้าย-ขวาตัวอักษร (mm)", min_value=-200, max_value=200,
-                                step=1, key="_edit_label_x_offset", on_change=save_back,
-                                help="0 = กึ่งกลาง QR, ค่าบวก = ขวา, ค่าลบ = ซ้าย")
+                st.number_input("↔ ขยับซ้าย-ขวาข้อความ (mm)", min_value=-200, max_value=200,
+                                step=1, key="_edit_label_x_offset", on_change=save_back)
             with c6:
                 st.number_input("🔤 ขนาดตัวอักษร (pt)", min_value=2, max_value=72,
                                 step=1, key="_edit_label_font_size", on_change=save_back)
             c7, c8 = st.columns(2)
             with c7:
                 st.number_input("📏 ความกว้างกรอบตัวอักษร (mm)", min_value=5, max_value=max_x,
-                                step=1, key="_edit_label_width", on_change=save_back,
-                                help="ข้อความจะขึ้นบรรทัดใหม่เมื่อเกินความกว้างนี้")
+                                step=1, key="_edit_label_width", on_change=save_back)
             with c8:
                 align_options = ["ซ้าย", "กลาง", "ขวา"]
                 st.radio("📐 จัดตำแหน่งตัวอักษร", options=align_options,
                          key="_edit_label_align", on_change=save_back, horizontal=True)
 
-        # Also save on every render (in case user just typed)
         save_back()
 
-        # Summary of all QR positions
         if len(selected_cols) > 1:
             st.markdown("---")
-            st.markdown("**📋 ตำแหน่ง QR ทั้งหมด:**")
+            st.markdown("**📋 ตำแหน่งทั้งหมด:**")
             for j, cn in enumerate(selected_cols):
                 cn_str = str(cn)
                 clr = COLORS[j % len(COLORS)]
@@ -991,7 +1013,6 @@ def main():
                     unsafe_allow_html=True,
                 )
 
-    # ── Build configs from stored positions ──
     col_configs = {}
     qr_preview_configs = []
     for i, col_name in enumerate(selected_cols):
@@ -999,12 +1020,23 @@ def main():
         color = COLORS[i % len(COLORS)]
         p = st.session_state.qr_positions.get(cn_str, {"x": 10, "y": 10, "size": default_qr_size, "label": True})
         sv = smart_str(df_selected[col_name].iloc[0]) if len(df_selected) > 0 else ""
-
+        label_col = p.get("label_col", cn_str)
+        label_offset = p.get("label_row_offset", 0)
+        sv_label = ""
+        if len(df_selected) > 0 and label_col in df_selected.columns:
+            preview_idx = 0 + label_offset
+            if 0 <= preview_idx < len(df_selected):
+                sv_label = smart_str(df_selected[label_col].iloc[preview_idx])
+        else:
+            sv_label = sv
+        
         col_configs[col_name] = {
             "x_mm": p["x"],
             "y_mm": p["y"],
             "size_mm": p["size"],
             "show_label": p["label"],
+            "label_col": label_col,
+            "label_row_offset": label_offset,
             "label_font_size": p.get("label_font_size", default_label_size),
             "label_x_offset": p.get("label_x_offset", 0),
             "label_width_mm": p.get("label_width_mm", p["size"]),
@@ -1017,6 +1049,7 @@ def main():
             "y_mm": p["y"],
             "size_mm": p["size"],
             "value": sv,
+            "label_value": sv_label,
             "color": color,
             "show_label": p["label"],
             "label_font_size": p.get("label_font_size", default_label_size),
@@ -1039,7 +1072,7 @@ def main():
 
         st.caption(
             f"📌 หน้าที่ 1 จากทั้งหมด {total_rows:,} หน้า — "
-            f"ทุกหน้ามี QR ตำแหน่งเดียวกัน ข้อมูลต่างกันตามแถว"
+            f"ทุกหน้ามีตำแหน่งเดียวกัน ข้อมูลต่างกันตามแถว"
         )
 
     # ─── STEP 4 : EXPORT ───
@@ -1047,14 +1080,14 @@ def main():
 
     ecol1, ecol2, ecol3 = st.columns([2, 1, 1])
     with ecol1:
-        pdf_filename = st.text_input("ชื่อไฟล์ PDF", value="qrcodes_output")
+        pdf_filename = st.text_input("ชื่อไฟล์ PDF", value="output_document")
     with ecol2:
-        st.metric("QR / หน้า", f"{len(selected_cols)}")
+        st.metric("ข้อมูล / หน้า", f"{len(selected_cols)}")
     with ecol3:
         st.metric("จำนวนหน้า PDF", f"{total_rows:,}")
 
     if st.button("🖨️ สร้าง PDF และดาวน์โหลด", type="primary", use_container_width=True):
-        progress_bar = st.progress(0, text="กำลังสร้าง QR Code...")
+        progress_bar = st.progress(0, text="กำลังสร้างไฟล์ PDF...")
 
         def update_progress(pct):
             done = int(pct * total_rows)
@@ -1074,7 +1107,7 @@ def main():
         )
 
         progress_bar.progress(1.0, text="✅ เสร็จสิ้น!")
-        st.success(f"✅ สร้าง PDF เรียบร้อย — **{n_pages:,} หน้า**, QR {len(selected_cols)} ตัว/หน้า")
+        st.success(f"✅ สร้าง PDF เรียบร้อย — **{n_pages:,} หน้า**, ข้อมูล {len(selected_cols)} จุด/หน้า")
 
         st.download_button(
             label="📥 ดาวน์โหลด PDF",
@@ -1083,7 +1116,6 @@ def main():
             mime="application/pdf",
             use_container_width=True,
         )
-
 
 if __name__ == "__main__":
     main()
