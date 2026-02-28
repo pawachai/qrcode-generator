@@ -355,7 +355,6 @@ def create_page_preview(
         x = cfg["x_mm"]
         y = cfg["y_mm"]
         w = cfg["width_mm"]
-        h = cfg["height_mm"]
         color = cfg["color"]
         col_name = cfg["col_name"]
         value = smart_str(cfg["value"])
@@ -363,6 +362,14 @@ def create_page_preview(
 
         if not value: 
             continue
+
+        # คำนวณความสูงตามจริงของรูปๆ นี้
+        if isinstance(value, str) and os.path.isfile(value) and value.lower().endswith(('.png', '.jpg', '.jpeg')):
+            actual_ratio = get_image_aspect_ratio(value)
+        else:
+            actual_ratio = 1.0
+        
+        h = w * actual_ratio
 
         is_active = cfg.get("is_active", False)
         border_w = 3.5 if is_active else 1.5
@@ -502,8 +509,16 @@ def generate_pdf(
             value = smart_str(raw)
             x_pt = cfg["x_mm"] * mm
             w_pt = cfg["width_mm"] * mm
-            h_pt = cfg["height_mm"] * mm
+            
+            # --- แก้ไขตรงนี้: คำนวณสัดส่วนรูปแบบ Real-time แยกทีละรูป ---
+            if isinstance(value, str) and os.path.isfile(value) and value.lower().endswith(('.png', '.jpg', '.jpeg')):
+                img_ratio = get_image_aspect_ratio(value)
+            else:
+                img_ratio = 1.0 # QR Code เป็นสี่เหลี่ยมจัตุรัสเสมอ
+                
+            h_pt = w_pt * img_ratio
             y_pt = page_h - cfg["y_mm"] * mm - h_pt
+            # --------------------------------------------------------
 
             if isinstance(value, str) and os.path.isfile(value) and value.lower().endswith(('.png', '.jpg', '.jpeg')):
                 c.drawImage(value, x_pt, y_pt, width=w_pt, height=h_pt)
@@ -624,7 +639,6 @@ def main():
         unsafe_allow_html=True,
     )
 
-    # เก็บ Folder ชั่วคราวไว้ตลอดอายุ Session
     if "temp_dir" not in st.session_state:
         st.session_state.temp_dir = tempfile.mkdtemp()
     if "img_group_count" not in st.session_state:
@@ -712,7 +726,6 @@ def main():
             st.info("👆 กรุณาอัปโหลดรูปภาพอย่างน้อย 1 กลุ่มเพื่อเริ่มต้น")
             st.stop()
             
-        # เติมช่องว่าง (None) ให้ทุกคอลัมน์มีจำนวนแถวเท่ากัน
         for k in dict_data.keys():
             dict_data[k] = dict_data[k] + [None] * (max_len - len(dict_data[k]))
             
@@ -775,7 +788,6 @@ def main():
 
     col_options = df.columns.tolist()
     
-    # เลือกทุก Image_Group อัตโนมัติถ้ามี
     img_cols = [c for c in col_options if c.startswith("Image_Group_")]
     default_selection = img_cols if img_cols else ([col_options[0]] if col_options else [])
     
@@ -840,7 +852,6 @@ def main():
     for i, col_name in enumerate(selected_cols):
         cn = str(col_name)
         if cn not in st.session_state.qr_positions:
-            # คำนวณ Aspect Ratio เพื่อไม่ให้รูปเบี้ยว
             ratio = 1.0
             valid_vals = df_selected[col_name].dropna()
             if len(valid_vals) > 0:
@@ -935,7 +946,6 @@ def main():
         active_idx = col_str_list.index(active_cn) if active_cn in col_str_list else 0
         active_color = COLORS[active_idx % len(COLORS)]
         
-        # หาทีค่าที่มีอยู่จริงเพื่อมาแสดงตัวอย่าง
         valid_sample = df_selected[selected_cols[active_idx]].dropna()
         sample_val = smart_str(valid_sample.iloc[0]) if len(valid_sample) > 0 else ""
         
@@ -965,10 +975,9 @@ def main():
             st.number_input("↔ ความกว้างรูป/QR (mm)", min_value=3, max_value=500,
                             step=1, key="_edit_width", on_change=save_back)
         with c4:
-            # คำนวณและแสดงความสูงอัตโนมัติ
             cur_ratio = st.session_state.get("_edit_ratio", 1.0)
             calc_height = st.session_state._edit_width * cur_ratio
-            st.markdown(f"<br><span style='color:#555;'>↕ สูงอัตโนมัติ:<br><b>{calc_height:.1f} mm</b></span>", unsafe_allow_html=True)
+            st.markdown(f"<br><span style='color:#555;'>↕ สูงอัตโนมัติ (อิงตามรูปจริง):<br><b>~{calc_height:.1f} mm</b> (ตัวอย่าง)</span>", unsafe_allow_html=True)
             
         st.checkbox("แสดงข้อความด้านล่าง", key="_edit_label", on_change=save_back)
 
@@ -1022,13 +1031,11 @@ def main():
     col_configs = {}
     qr_preview_configs = []
     
-    # หาสิ่งที่จะแสดงในหน้า Preview (หน้า 1 หรือหน้าที่ข้อมูลไม่ว่าง)
     for i, col_name in enumerate(selected_cols):
         cn_str = str(col_name)
         color = COLORS[i % len(COLORS)]
         p = st.session_state.qr_positions.get(cn_str, {"x": 10, "y": 10, "width": default_qr_size, "ratio": 1.0, "label": True})
         
-        # หา value สำหรับโชว์
         valid_vals = df_selected[col_name].dropna()
         sv = smart_str(valid_vals.iloc[0]) if len(valid_vals) > 0 else ""
         
@@ -1044,13 +1051,11 @@ def main():
             sv_label = sv
             
         w_mm = p["width"]
-        h_mm = p["width"] * p.get("ratio", 1.0)
         
         col_configs[col_name] = {
             "x_mm": p["x"],
             "y_mm": p["y"],
             "width_mm": w_mm,
-            "height_mm": h_mm,
             "show_label": p["label"],
             "label_col": label_col,
             "label_row_offset": label_offset,
@@ -1065,7 +1070,6 @@ def main():
             "x_mm": p["x"],
             "y_mm": p["y"],
             "width_mm": w_mm,
-            "height_mm": h_mm,
             "value": sv,
             "label_value": sv_label,
             "color": color,
